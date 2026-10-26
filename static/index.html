@@ -813,10 +813,33 @@
         </div>
       </div>
 
+      <!-- Pure Drawing Isolation (ML & OpenCV) -->
+      <div class="sidebar-section">
+        <div class="section-label">Pure Geometry Isolation (ML &amp; OpenCV)</div>
+        <button class="btn-download-primary" id="btnIsolatePureDrawing" style="background: #0f766e; border-color: #0d9488; margin-bottom: 8px;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: middle; margin-right: 4px;"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+          <span>Isolate Pure Geometry Alone</span>
+        </button>
+        <div style="font-size: 11px; color: var(--text-muted); line-height: 1.4;">
+          Uses ML &amp; OpenCV to automatically remove all arrow lines, dimension leaders, witness lines, and measurement text.
+        </div>
 
+        <div id="isolationStatsBox" style="display: none; margin-top: 10px; background: #f0fdfa; border: 1px solid #99f6e4; border-radius: 6px; padding: 10px; font-size: 11.5px; color: #115e59;">
+          <div style="font-weight: 600; margin-bottom: 5px; display: flex; align-items: center; gap: 5px; color: #0f766e;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            Pure Drawing Isolated
+          </div>
+          <div id="statClearedText" style="margin-bottom: 2px;">• Text cleared: 0</div>
+          <div id="statClearedArrows" style="margin-bottom: 2px;">• Arrows cleared: 0</div>
+          <div id="statClearedLines">• Dimension lines cleared: 0</div>
+        </div>
+      </div>
 
       <!-- Download Button Section -->
       <div class="sidebar-section">
+        <button class="btn-download-primary" id="btnDownloadPure" style="display: none; background: #0f766e; border-color: #0d9488; margin-bottom: 8px;">
+          <span>Download Pure Geometry (PNG)</span>
+        </button>
         <button class="btn-download-primary" id="btnDownloadTransparent">
           <span>Download Cleaned Drawing (PNG)</span>
         </button>
@@ -833,7 +856,9 @@
       <!-- Viewer Toolbar -->
       <div class="viewer-toolbar">
         <div class="toolbar-group">
-          <button class="tool-btn active" id="viewCadBtn">CAD Grid View</button>
+          <button class="tool-btn active" id="viewCadBtn">Cleaned Drawing</button>
+          <button class="tool-btn" id="viewPureBtn" style="display: none; font-weight: 600; color: #0f766e;">Pure Geometry</button>
+          <button class="tool-btn" id="viewDimBtn" style="display: none;">Dimensions Layer</button>
           <button class="tool-btn" id="viewSplitBtn">Split Compare</button>
           <button class="tool-btn" id="viewSideBtn">Side by Side</button>
         </div>
@@ -915,9 +940,11 @@
     const state = {
       originalImageSrc: null,
       cleanedImageSrc: null,
+      isolatedGeometrySrc: null,
+      dimensionsLayerSrc: null,
       width: 0,
       height: 0,
-      viewMode: 'cad', // 'cad', 'split', 'side'
+      viewMode: 'cad', // 'cad', 'pure', 'dim', 'split', 'side'
       gridTheme: 'light', // 'light', 'dark', 'checker', 'off'
       isGridVisible: true,
       splitPosition: 0.5,
@@ -929,17 +956,8 @@
       startX: 0,
       startY: 0,
       options: {
-        sensitivity: 0.52,
-        contrast: 1.45,
-        shadow_removal: 0.85,
-        grid_suppression: 0.0,
-        despeckle: 1,
         output_mode: 'transparent',
-        line_color_mode: 'original',
-        black_point: 0.22,
-        pre_contrast: 1.35,
-        color_boost: 1.25,
-        exposure: 1.0
+        line_color_mode: 'black'
       }
     };
 
@@ -963,7 +981,15 @@
     const outputModeSelect = document.getElementById('outputModeSelect');
     const lineColorSelect = document.getElementById('lineColorSelect');
 
+    const btnIsolatePureDrawing = document.getElementById('btnIsolatePureDrawing');
+    const isolationStatsBox = document.getElementById('isolationStatsBox');
+    const statClearedText = document.getElementById('statClearedText');
+    const statClearedArrows = document.getElementById('statClearedArrows');
+    const statClearedLines = document.getElementById('statClearedLines');
+
     const viewCadBtn = document.getElementById('viewCadBtn');
+    const viewPureBtn = document.getElementById('viewPureBtn');
+    const viewDimBtn = document.getElementById('viewDimBtn');
     const viewSplitBtn = document.getElementById('viewSplitBtn');
     const viewSideBtn = document.getElementById('viewSideBtn');
 
@@ -978,6 +1004,7 @@
     const zoomResetBtn = document.getElementById('zoomResetBtn');
     const zoomLabel = document.getElementById('zoomLabel');
 
+    const btnDownloadPure = document.getElementById('btnDownloadPure');
     const btnDownloadTransparent = document.getElementById('btnDownloadTransparent');
     const btnDownloadWithGrid = document.getElementById('btnDownloadWithGrid');
 
@@ -1043,6 +1070,12 @@
         state.width = testImg.naturalWidth;
         state.height = testImg.naturalHeight;
         statResolution.textContent = `Dimensions: ${state.width} × ${state.height} px`;
+        state.isolatedGeometrySrc = null;
+        state.dimensionsLayerSrc = null;
+        if (viewPureBtn) viewPureBtn.style.display = 'none';
+        if (viewDimBtn) viewDimBtn.style.display = 'none';
+        if (btnDownloadPure) btnDownloadPure.style.display = 'none';
+        if (isolationStatsBox) isolationStatsBox.style.display = 'none';
         triggerProcessing();
       };
       testImg.src = dataUrl;
@@ -1086,6 +1119,40 @@
       }
     }
 
+    // Pure Geometry Isolation via ML & OpenCV
+    btnIsolatePureDrawing.addEventListener('click', async () => {
+      if (!state.originalImageSrc) return;
+      showSpinner(true);
+      try {
+        const resp = await fetch('/api/isolate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_base64: state.originalImageSrc })
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        state.isolatedGeometrySrc = data.isolated_geometry_base64;
+        state.dimensionsLayerSrc = data.dimensions_layer_base64;
+
+        viewPureBtn.style.display = 'inline-block';
+        viewDimBtn.style.display = 'inline-block';
+        btnDownloadPure.style.display = 'block';
+
+        isolationStatsBox.style.display = 'block';
+        statClearedText.textContent = `• Text cleared: ${data.stats.text_annotations_count}`;
+        statClearedArrows.textContent = `• Arrows cleared: ${data.stats.arrowheads_count}`;
+        statClearedLines.textContent = `• Dimension lines cleared: ${data.stats.dimension_lines_count}`;
+        statLatency.textContent = `ML + OpenCV: ${data.stats.processing_time_ms} ms`;
+
+        setViewMode('pure');
+      } catch (err) {
+        console.error('Isolation failed:', err);
+        alert('Failed to isolate pure drawing: ' + err.message);
+      } finally {
+        showSpinner(false);
+      }
+    });
+
     function showSpinner(show) {
       if (show) processingIndicator.classList.add('active');
       else processingIndicator.classList.remove('active');
@@ -1093,15 +1160,19 @@
 
     // View Mode Switcher
     viewCadBtn.addEventListener('click', () => setViewMode('cad'));
+    viewPureBtn.addEventListener('click', () => setViewMode('pure'));
+    viewDimBtn.addEventListener('click', () => setViewMode('dim'));
     viewSplitBtn.addEventListener('click', () => setViewMode('split'));
     viewSideBtn.addEventListener('click', () => setViewMode('side'));
 
     function setViewMode(mode) {
       state.viewMode = mode;
-      [viewCadBtn, viewSplitBtn, viewSideBtn].forEach(b => {
+      [viewCadBtn, viewPureBtn, viewDimBtn, viewSplitBtn, viewSideBtn].forEach(b => {
         if (b) b.classList.remove('active');
       });
       if (mode === 'cad' && viewCadBtn) viewCadBtn.classList.add('active');
+      if (mode === 'pure' && viewPureBtn) viewPureBtn.classList.add('active');
+      if (mode === 'dim' && viewDimBtn) viewDimBtn.classList.add('active');
       if (mode === 'split' && viewSplitBtn) viewSplitBtn.classList.add('active');
       if (mode === 'side' && viewSideBtn) viewSideBtn.classList.add('active');
       renderViewer();
@@ -1239,21 +1310,29 @@
       emptyState.style.display = 'none';
       viewport.style.display = 'flex';
 
-      const cleanedSrc = state.cleanedImageSrc || state.originalImageSrc;
+      let activeSrc = state.cleanedImageSrc || state.originalImageSrc;
+      let activeLabel = 'Cleaned (0-Color Background Removed)';
+      if (state.viewMode === 'pure' && state.isolatedGeometrySrc) {
+        activeSrc = state.isolatedGeometrySrc;
+        activeLabel = 'Isolated Pure Geometry (No Dimensions/Arrows/Text)';
+      } else if (state.viewMode === 'dim' && state.dimensionsLayerSrc) {
+        activeSrc = state.dimensionsLayerSrc;
+        activeLabel = 'Extracted Dimensions & Annotations';
+      }
 
-      if (state.viewMode === 'cad') {
+      if (state.viewMode === 'cad' || state.viewMode === 'pure' || state.viewMode === 'dim') {
         // Pure Autodesk CAD Grid: Transparent drawing placed directly onto CAD model space
         viewHost.innerHTML = `
           <div class="cad-drawing-wrapper" style="width: ${state.width}px; height: ${state.height}px;">
-            <img class="cad-drawing-img" src="${cleanedSrc}" style="width: ${state.width}px; height: ${state.height}px;" alt="CAD Model Space Drawing" />
+            <img class="cad-drawing-img" src="${activeSrc}" style="width: ${state.width}px; height: ${state.height}px;" alt="CAD Model Space Drawing" />
           </div>
         `;
       } else if (state.viewMode === 'split') {
         const pct = (state.splitPosition * 100).toFixed(2);
         viewHost.innerHTML = `
           <div class="split-wrapper" id="splitWrapper" style="width: ${state.width}px; height: ${state.height}px;">
-            <!-- Base: Cleaned drawing on CAD grid -->
-            <img class="split-img-original" src="${cleanedSrc}" style="width: ${state.width}px; height: ${state.height}px;" alt="Cleaned Drawing" />
+            <!-- Base: Active drawing on CAD grid -->
+            <img class="split-img-original" src="${activeSrc}" style="width: ${state.width}px; height: ${state.height}px;" alt="Cleaned Drawing" />
             
             <!-- Original raw image on the left overlay -->
             <div class="split-overlay" id="splitOverlay" style="width: ${pct}%;">
@@ -1281,9 +1360,9 @@
               <img src="${state.originalImageSrc}" alt="Original Drawing" />
             </div>
             <div class="side-panel">
-              <div class="side-panel-label">Cleaned (0-Color Background Removed)</div>
+              <div class="side-panel-label">${activeLabel}</div>
               <div class="side-cad-wrap">
-                <img src="${cleanedSrc}" alt="Cleaned Drawing" />
+                <img src="${activeSrc}" alt="Active Drawing" />
               </div>
             </div>
           </div>
@@ -1296,6 +1375,20 @@
     // -------------------------------------------------------------
     // Download Handlers
     // -------------------------------------------------------------
+    // 0. Download pure isolated geometry alone
+    if (btnDownloadPure) {
+      btnDownloadPure.addEventListener('click', () => {
+        const src = state.isolatedGeometrySrc || state.cleanedImageSrc || state.originalImageSrc;
+        if (!src) return;
+        const link = document.createElement('a');
+        link.href = src;
+        link.download = `autodesk_pure_geometry_isolated_${Date.now()}.png`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      });
+    }
+
     // 1. Download pure 0-color transparent PNG
     btnDownloadTransparent.addEventListener('click', () => {
       const src = state.cleanedImageSrc || state.originalImageSrc;

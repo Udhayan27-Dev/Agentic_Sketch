@@ -20,6 +20,11 @@ struct ProcessJsonRequest {
     options: ProcessOptions,
 }
 
+#[derive(Deserialize)]
+struct IsolateJsonRequest {
+    image_base64: String,
+}
+
 #[derive(Serialize)]
 struct ProcessJsonResponse {
     image_base64: String,
@@ -40,6 +45,7 @@ async fn main() {
         .route("/", get(index_handler))
         .route("/api/process", post(process_handler))
         .route("/api/process_multipart", post(process_multipart_handler))
+        .route("/api/isolate", post(isolate_handler))
         .route("/api/sample/:name", get(sample_handler))
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB limit
         .layer(cors);
@@ -179,6 +185,42 @@ async fn sample_handler(
     headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
 
     Ok((StatusCode::OK, headers, png_bytes).into_response())
+}
+
+async fn isolate_handler(
+    Json(payload): Json<IsolateJsonRequest>,
+) -> Result<Response, (StatusCode, String)> {
+    let mut child = tokio::process::Command::new("python3")
+        .arg("dimension_cleaner.py")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to spawn cleaner: {}", e)))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        let req_json = serde_json::to_vec(&serde_json::json!({
+            "image_base64": payload.image_base64
+        })).unwrap();
+        stdin.write_all(&req_json).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to send data to cleaner: {}", e)))?;
+    }
+
+    let output = child.wait_with_output().await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Cleaner execution failed: {}", e)))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Cleaner error: {}", err)));
+    }
+
+    let body_str = String::from_utf8(output.stdout)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid cleaner output: {}", e)))?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    Ok((StatusCode::OK, headers, body_str).into_response())
 }
 
 
