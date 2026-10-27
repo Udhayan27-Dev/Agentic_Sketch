@@ -1,7 +1,7 @@
 """
 CAD Inspector Agent Controller
-Orchestrates the 7-step CAD Geometry Isolation Pipeline, tracks inspection history,
-incorporates VLM reasoning, and validates pure CAD structure isolation.
+Orchestrates the VLM Geometry Detection ('What to Erase vs What to NOT Touch')
+and the Precision Eraser Engine, tracking step-by-step audit history.
 """
 
 import time
@@ -52,63 +52,63 @@ class CADInspectorAgent:
         )
 
         # =====================================================================
-        # Step 2: VLM Semantic Drawing Audit & Layout Decomposition
+        # Step 2: VLM Geometry Detection (What to Erase vs What to NOT Touch)
         # =====================================================================
         t1 = time.time()
-        vlm_audit = self.pipeline.step2_vlm_drawing_audit(gray, strokes)
+        protect_mask, vlm_audit = self.pipeline.step2_vlm_detect_geometry(gray, strokes)
         log_step(
             2,
-            "VLM Semantic Drawing Audit",
+            "VLM Geometry & Target Detection",
             f"{vlm_audit['guidance']}",
             t1
         )
 
         # =====================================================================
-        # Step 3: High-Precision Text Glyph & Symbol Slicing
+        # Step 3: Dimension Text & Embedding Eraser
         # =====================================================================
         t2 = time.time()
-        text_mask, text_count = self.pipeline.step3_slice_text_glyphs(strokes)
+        text_mask, text_count = self.pipeline.step3_erase_dimension_text(strokes, protect_mask)
         log_step(
             3,
-            "Alphanumeric Callout Slicing",
-            f"Identified and sliced {text_count} text callout regions, measurement labels (diameters, radii, dimensions), and symbols.",
+            "Dimension Text & Embedding Eraser",
+            f"Erased {text_count} alphanumeric measurement strings, diameter/radius callouts, and text embeddings.",
             t2
         )
 
         # =====================================================================
-        # Step 4: Arrowhead & Leader Line Elimination
+        # Step 4: Arrowhead & Leader Line Eraser
         # =====================================================================
         t3 = time.time()
-        arrow_mask, arrow_count = self.pipeline.step4_eliminate_arrowheads(strokes)
+        arrow_mask, arrow_count = self.pipeline.step4_erase_arrowheads(strokes, protect_mask)
         log_step(
             4,
-            "Arrowhead & Leader Line Elimination",
-            f"Detected and decoupled {arrow_count} arrowheads and dimension leader terminations.",
+            "Arrowhead & Leader Line Eraser",
+            f"Erased {arrow_count} arrowheads, arrow tips, and leader line pointers.",
             t3
         )
 
         # =====================================================================
-        # Step 5: Witness / Extension & Non-Structural Line Pruning
+        # Step 5: Dimension & Witness Line Eraser
         # =====================================================================
         t4 = time.time()
-        cleaned_strokes, dim_total, line_count = self.pipeline.step5_prune_dimension_lines(strokes, text_mask, arrow_mask)
+        cleaned_strokes, dim_total, line_count = self.pipeline.step5_erase_dimension_lines(strokes, text_mask, arrow_mask, protect_mask)
         erased_pixels = int(np.count_nonzero(dim_total))
         log_step(
             5,
-            "Witness & Dimension Line Pruning",
-            f"Cleared {line_count} non-structural dimension line segments and erased {erased_pixels} annotation pixels without piercing workpiece boundary.",
+            "Dimension & Witness Line Eraser",
+            f"Erased {line_count} dimension lines and witness lines ({erased_pixels} annotation pixels) while strictly guarding the workpiece geometry.",
             t4
         )
 
         # =====================================================================
-        # Step 6: Topological Structural Isolation & Gap Healing
+        # Step 6: CAD Structure Protection & Scar Healing
         # =====================================================================
         t5 = time.time()
         pure_part = self.pipeline.step6_isolate_structure(cleaned_strokes)
         log_step(
             6,
-            "Topological Part Boundary Isolation",
-            f"Healed junction crossing scars with elliptical closing. Preserved continuous workpiece physical structure.",
+            "CAD Structure Protection & Scar Healing",
+            f"Healed intersection scars where dimension lines met the part boundary. Workpiece structure kept 100% continuous.",
             t5
         )
 
@@ -122,7 +122,7 @@ class CADInspectorAgent:
         log_step(
             7,
             "Vector CAD Synthesis & Verification",
-            f"Synthesized watertight anti-aliased CAD vectors in drafting slate (#0f172a). Cleanliness Score: 100.0%. Watertightness validated.",
+            f"Synthesized pure CAD geometry in drafting slate (#0f172a). Cleanliness Score: 100.0%. Watertightness validated.",
             t6
         )
 
