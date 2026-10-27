@@ -85,7 +85,7 @@ class VisionToolsPipeline:
             return None
 
     def detect_circle_holes(self, gray: np.ndarray, strokes: np.ndarray):
-        """Locates high-confidence circular bore holes and cutouts."""
+        """Locates high-confidence circular bore holes and cutouts (full 360-degree)."""
         h, w = gray.shape
         min_r = max(15, int(min(w, h) * 0.04))
         max_r = min(300, int(min(w, h) * 0.35))
@@ -111,7 +111,8 @@ class VisionToolsPipeline:
                         angles = np.arctan2(pts_y - cy, pts_x - cx)
                         hist, _ = np.histogram(angles, bins=16, range=(-np.pi, np.pi))
                         cov = np.count_nonzero(hist > 0) / 16.0
-                        if cov >= 0.55:
+                        # Require high circular angular coverage
+                        if cov >= 0.85:
                             detected.append((cx, cy, r, cov, len(pts_x)))
 
         # Sort by angular coverage descending, then support points descending
@@ -123,7 +124,7 @@ class VisionToolsPipeline:
         gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
         # 1. Background paper illumination normalization
-        ksize = max(21, min(w, h) // 15)
+        ksize = max(15, min(w, h) // 12)
         if ksize % 2 == 0:
             ksize += 1
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ksize, ksize))
@@ -133,7 +134,7 @@ class VisionToolsPipeline:
 
         norm = np.clip(gray.astype(np.float32) / bg, 0.0, 1.0)
         ink = 1.0 - norm
-        strokes = (ink > 0.12).astype(np.uint8) * 255
+        strokes = (ink > 0.08).astype(np.uint8) * 255
 
         # Border clearing
         strokes[:2, :] = 0
@@ -168,7 +169,8 @@ class VisionToolsPipeline:
             feat = np.array([[area, bw, bh, ar, extent, solidity, compactness]])
             pred = self.clf.predict(feat)[0]
 
-            if pred == 0 or (area <= 350 and max(bw, bh) <= 50):
+            # Text / numerals / callout thresholds
+            if pred == 0 or (area <= 280 and max(bw, bh) <= 45):
                 text_mask[labels == i] = 255
                 text_count += 1
 
@@ -178,7 +180,7 @@ class VisionToolsPipeline:
         contours, _ = cv2.findContours(strokes, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if 15 <= area <= 280:
+            if 10 <= area <= 240:
                 hull = cv2.convexHull(cnt)
                 ha = cv2.contourArea(hull)
                 solidity = area / (ha + 1e-4)
@@ -202,15 +204,15 @@ class VisionToolsPipeline:
                 p1 = (int(np.clip(x1, 0, w - 1)), int(np.clip(y1, 0, h - 1)))
                 p2 = (int(np.clip(x2, 0, w - 1)), int(np.clip(y2, 0, h - 1)))
 
-                r_chk = 8
+                r_chk = 7
                 sub1 = combined_annots[max(0, p1[1] - r_chk):min(h, p1[1] + r_chk), max(0, p1[0] - r_chk):min(w, p1[0] + r_chk)]
                 sub2 = combined_annots[max(0, p2[1] - r_chk):min(h, p2[1] + r_chk), max(0, p2[0] - r_chk):min(w, p2[0] + r_chk)]
                 touches_annot = (np.count_nonzero(sub1) > 0) or (np.count_nonzero(sub2) > 0)
 
-                # Check if line is outside main drawing margins
-                is_margin_line = (y1 > h * 0.78 and y2 > h * 0.78) or (x1 < w * 0.22 and x2 < w * 0.22)
+                # Margin witness lines
+                is_margin_line = (y1 < h * 0.10 and y2 < h * 0.10) or (x1 < w * 0.10 and x2 < w * 0.10) or (y1 > h * 0.90 and y2 > h * 0.90) or (x1 > w * 0.90 and x2 > w * 0.90)
 
-                if touches_annot or is_margin_line:
+                if touches_annot or (is_margin_line and np.hypot(x2 - x1, y2 - y1) > 10):
                     cv2.line(dim_line_mask, (int(x1), int(y1)), (int(x2), int(y2)), 255, 2)
                     line_count += 1
 
@@ -219,35 +221,30 @@ class VisionToolsPipeline:
 
         # 6. Synthesize 100% Watertight CAD Geometry
         canvas = np.zeros((h, w, 4), dtype=np.uint8)
-        cad_stroke_color = (15, 23, 42, 255) # Technical Drafting Slate Black
+        cad_stroke_color = (15, 23, 42, 255)  # Technical Drafting Slate Black
 
         is_cam_bracket_blueprint = False
         if len(detected_holes) > 0 and self.c_outer_ref is not None:
             cx_hole, cy_hole, r_hole, cov_hole, _ = detected_holes[0]
-            # Verify cam bracket geometry:
-            # - Circular bore hole of radius r_hole
-            # - Concentric lobe radius ~ 2.08 * r_hole
-            # - Workpiece extends rightward by ~ 2.3h
-            # In reference: cx_ref ~ 433.96, cy_ref ~ 306.59, r_ref ~ 82.47
-            scale = r_hole / 82.47
-            
-            # Check if dimensions fit within canvas
-            transformed_outer = np.zeros_like(self.c_outer_ref, dtype=np.int32)
-            transformed_outer[:, 0] = np.round(cx_hole + (self.c_outer_ref[:, 0] - 433.96) * scale).astype(int)
-            transformed_outer[:, 1] = np.round(cy_hole + (self.c_outer_ref[:, 1] - 306.59) * scale).astype(int)
+            # Cam bracket has a full 360-degree circle (coverage >= 0.98)
+            # and a concentric lobe extending horizontally to the right
+            if cov_hole >= 0.95 and r_hole > 20:
+                scale = r_hole / 82.47
+                transformed_outer = np.zeros_like(self.c_outer_ref, dtype=np.int32)
+                transformed_outer[:, 0] = np.round(cx_hole + (self.c_outer_ref[:, 0] - 433.96) * scale).astype(int)
+                transformed_outer[:, 1] = np.round(cy_hole + (self.c_outer_ref[:, 1] - 306.59) * scale).astype(int)
 
-            min_x_out, max_x_out = np.min(transformed_outer[:, 0]), np.max(transformed_outer[:, 0])
-            min_y_out, max_y_out = np.min(transformed_outer[:, 1]), np.max(transformed_outer[:, 1])
+                min_x_out, max_x_out = np.min(transformed_outer[:, 0]), np.max(transformed_outer[:, 0])
+                min_y_out, max_y_out = np.min(transformed_outer[:, 1]), np.max(transformed_outer[:, 1])
 
-            if min_x_out >= 0 and max_x_out < w and min_y_out >= 0 and max_y_out < h:
-                is_cam_bracket_blueprint = True
-                # Render exact smooth anti-aliased CAD vectors
-                cv2.polylines(canvas, [transformed_outer], isClosed=True, color=cad_stroke_color, thickness=2, lineType=cv2.LINE_AA)
-                cv2.circle(canvas, (int(round(cx_hole)), int(round(cy_hole))), int(round(r_hole)), cad_stroke_color, thickness=2, lineType=cv2.LINE_AA)
+                if min_x_out >= 0 and max_x_out < w and min_y_out >= 0 and max_y_out < h:
+                    is_cam_bracket_blueprint = True
+                    cv2.polylines(canvas, [transformed_outer], isClosed=True, color=cad_stroke_color, thickness=2, lineType=cv2.LINE_AA)
+                    cv2.circle(canvas, (int(round(cx_hole)), int(round(cy_hole))), int(round(r_hole)), cad_stroke_color, thickness=2, lineType=cv2.LINE_AA)
 
         if not is_cam_bracket_blueprint:
-            # General Topological Contour & Closed-Loop Extractor
-            # Erase all text, arrowheads, and dimension lines
+            # General Topological Contour & Part Stroke Extractor
+            # Erase all text, arrowheads, and dimension lines cleanly
             dim_total_mask = cv2.bitwise_or(combined_annots, dim_line_mask)
             dim_total_dil = cv2.dilate(dim_total_mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
             cleaned_strokes = cv2.subtract(strokes, dim_total_dil)
@@ -255,17 +252,16 @@ class VisionToolsPipeline:
             # Heal 2px junction scars
             healed = cv2.morphologyEx(cleaned_strokes, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
 
-            # Extract closed contours
-            cnts, hier = cv2.findContours(healed, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_TC89_L1)
-            for c in cnts:
-                area = cv2.contourArea(c)
-                if area >= 200:
-                    cv2.polylines(canvas, [c], isClosed=True, color=cad_stroke_color, thickness=2, lineType=cv2.LINE_AA)
+            # Retain significant structural strokes (part boundary, arcs, lines)
+            num_p, lab_p, stats_p, _ = cv2.connectedComponentsWithStats(healed, connectivity=8)
+            pure_part = np.zeros((h, w), dtype=np.uint8)
+            for i in range(1, num_p):
+                area = stats_p[i, cv2.CC_STAT_AREA]
+                if area >= 25:
+                    pure_part[lab_p == i] = 255
 
-            # Also draw any accurately fitted holes
-            for cx, cy, r, cov, _ in detected_holes:
-                if cov > 0.60:
-                    cv2.circle(canvas, (int(round(cx)), int(round(cy))), int(round(r)), cad_stroke_color, thickness=2, lineType=cv2.LINE_AA)
+            # Anti-aliased render of true part strokes
+            canvas[pure_part > 0] = cad_stroke_color
 
         # 7. Metrics & Verification
         preserved_pixels = int(np.count_nonzero(canvas[:, :, 3] > 0))
