@@ -721,6 +721,77 @@
     @keyframes spin {
       to { transform: rotate(360deg); }
     }
+
+    /* Agent Inspection Terminal */
+    .agent-terminal {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      overflow: hidden;
+      margin-top: 10px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+    .terminal-header {
+      background: #1e293b;
+      padding: 6px 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border-bottom: 1px solid #334155;
+    }
+    .term-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .term-dot.red { background: #ef4444; }
+    .term-dot.yellow { background: #eab308; }
+    .term-dot.green { background: #22c55e; }
+    .term-title {
+      color: #94a3b8;
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      margin-left: 4px;
+    }
+    .terminal-body {
+      padding: 10px;
+      max-height: 220px;
+      overflow-y: auto;
+      color: #cbd5e1;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      line-height: 1.45;
+    }
+    .log-step {
+      display: flex;
+      gap: 6px;
+      align-items: flex-start;
+      border-left: 2px solid #38bdf8;
+      padding-left: 6px;
+    }
+    .log-num {
+      color: #38bdf8;
+      font-weight: 700;
+    }
+    .log-phase {
+      color: #a78bfa;
+      font-weight: 600;
+    }
+    .log-time {
+      color: #64748b;
+      font-size: 9.5px;
+      margin-left: auto;
+    }
+    .log-detail {
+      color: #e2e8f0;
+      font-size: 10.5px;
+    }
   </style>
 </head>
 <body>
@@ -813,21 +884,37 @@
         </div>
       </div>
 
-      <!-- Pure Drawing Isolation (ML & OpenCV) -->
+      <!-- AI Agent Geometry Inspector & Audit Terminal -->
       <div class="sidebar-section">
-        <div class="section-label">Pure Geometry Isolation (ML &amp; OpenCV)</div>
+        <div class="section-label" style="display: flex; align-items: center; justify-content: space-between;">
+          <span>AI Inspector Agent</span>
+          <span style="font-size: 10px; background: #dcfce7; color: #15803d; padding: 2px 6px; border-radius: 4px; font-weight: 600;">DGX GB10 Online</span>
+        </div>
         <button class="btn-download-primary" id="btnIsolatePureDrawing" style="background: #0f766e; border-color: #0d9488; margin-bottom: 8px;">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: middle; margin-right: 4px;"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
-          <span>Isolate Pure Geometry Alone</span>
+          <span>Run AI Agent Inspection</span>
         </button>
         <div style="font-size: 11px; color: var(--text-muted); line-height: 1.4;">
-          Uses ML &amp; OpenCV to automatically remove all arrow lines, dimension leaders, witness lines, and measurement text.
+          Assigns an intelligent agent to inspect the drawing, trace and strip all dimensions/arrows, and isolate pure geometry with audit history.
+        </div>
+
+        <!-- Live Agent Terminal -->
+        <div class="agent-terminal" id="agentTerminal">
+          <div class="terminal-header">
+            <span class="term-dot red"></span>
+            <span class="term-dot yellow"></span>
+            <span class="term-dot green"></span>
+            <span class="term-title">Agent Execution Log</span>
+          </div>
+          <div class="terminal-body" id="agentLogContent">
+            <div style="color: #64748b;">[System] Agent initialized. Ready to inspect CAD drawing.</div>
+          </div>
         </div>
 
         <div id="isolationStatsBox" style="display: none; margin-top: 10px; background: #f0fdfa; border: 1px solid #99f6e4; border-radius: 6px; padding: 10px; font-size: 11.5px; color: #115e59;">
-          <div style="font-weight: 600; margin-bottom: 5px; display: flex; align-items: center; gap: 5px; color: #0f766e;">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
-            Pure Drawing Isolated
+          <div style="font-weight: 600; margin-bottom: 5px; display: flex; align-items: center; justify-content: space-between; color: #0f766e;">
+            <span>Inspection Verified</span>
+            <span id="statCleanScore" style="background: #ccfbf1; padding: 1px 6px; border-radius: 4px; font-size: 10.5px;">100% Pure</span>
           </div>
           <div id="statClearedText" style="margin-bottom: 2px;">• Text cleared: 0</div>
           <div id="statClearedArrows" style="margin-bottom: 2px;">• Arrows cleared: 0</div>
@@ -838,7 +925,10 @@
       <!-- Download Button Section -->
       <div class="sidebar-section">
         <button class="btn-download-primary" id="btnDownloadPure" style="display: none; background: #0f766e; border-color: #0d9488; margin-bottom: 8px;">
-          <span>Download Pure Geometry (PNG)</span>
+          <span>Download Isolated Geometry (PNG)</span>
+        </button>
+        <button class="btn-download-secondary" id="btnDownloadAuditLog" style="display: none; margin-bottom: 8px; border-color: #cbd5e1;">
+          <span>Download Agent Audit Log (JSON)</span>
         </button>
         <button class="btn-download-primary" id="btnDownloadTransparent">
           <span>Download Cleaned Drawing (PNG)</span>
@@ -1119,39 +1209,82 @@
       }
     }
 
-    // Pure Geometry Isolation via ML & OpenCV
-    btnIsolatePureDrawing.addEventListener('click', async () => {
+    // AI Agent CAD Geometry Inspection & Isolation
+    async function runAgentInspection() {
       if (!state.originalImageSrc) return;
       showSpinner(true);
+      const logContent = document.getElementById('agentLogContent');
+      logContent.innerHTML = '<div style="color: #38bdf8;">[Agent] Assigning inspection session on DGX-Spark...</div>';
+
       try {
-        const resp = await fetch('/api/isolate', {
+        const resp = await fetch('/api/agent/inspect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ image_base64: state.originalImageSrc })
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
+
+        state.agentResult = data;
         state.isolatedGeometrySrc = data.isolated_geometry_base64;
-        state.dimensionsLayerSrc = data.dimensions_layer_base64;
+        state.cleanedImageSrc = data.isolated_geometry_base64;
+
+        // Populate live Agent Terminal with inspection history
+        logContent.innerHTML = '';
+        data.inspection_history.forEach(step => {
+          const row = document.createElement('div');
+          row.className = 'log-step';
+          row.innerHTML = `
+            <span class="log-num">${step.step}.</span>
+            <div style="flex: 1;">
+              <div style="display: flex; justify-content: space-between;">
+                <span class="log-phase">${step.phase}</span>
+                <span class="log-time">${step.elapsed_ms}ms</span>
+              </div>
+              <div class="log-detail">${step.log}</div>
+            </div>
+          `;
+          logContent.appendChild(row);
+        });
+
+        // Update stats
+        isolationStatsBox.style.display = 'block';
+        statClearedText.textContent = `• Text cleared: ${data.metrics.text_regions_removed}`;
+        statClearedArrows.textContent = `• Arrows cleared: ${data.metrics.arrowheads_removed}`;
+        statClearedLines.textContent = `• Dimension lines cleared: ${data.metrics.dimension_lines_cleared}`;
+        const scoreElem = document.getElementById('statCleanScore');
+        if (scoreElem) scoreElem.textContent = `${data.metrics.cleanliness_score}% Pure`;
+        statLatency.textContent = `Agent (DGX): ${data.total_execution_ms} ms`;
 
         viewPureBtn.style.display = 'inline-block';
-        viewDimBtn.style.display = 'inline-block';
         btnDownloadPure.style.display = 'block';
-
-        isolationStatsBox.style.display = 'block';
-        statClearedText.textContent = `• Text cleared: ${data.stats.text_annotations_count}`;
-        statClearedArrows.textContent = `• Arrows cleared: ${data.stats.arrowheads_count}`;
-        statClearedLines.textContent = `• Dimension lines cleared: ${data.stats.dimension_lines_count}`;
-        statLatency.textContent = `ML + OpenCV: ${data.stats.processing_time_ms} ms`;
+        btnDownloadAuditLog.style.display = 'block';
 
         setViewMode('pure');
       } catch (err) {
-        console.error('Isolation failed:', err);
-        alert('Failed to isolate pure drawing: ' + err.message);
+        console.error('Agent inspection failed:', err);
+        logContent.innerHTML += `<div style="color: #ef4444;">[Error] Inspection failed: ${err.message}</div>`;
       } finally {
         showSpinner(false);
       }
-    });
+    }
+
+    btnIsolatePureDrawing.addEventListener('click', runAgentInspection);
+
+    // Download Agent Audit Log (JSON)
+    const btnDownloadAuditLog = document.getElementById('btnDownloadAuditLog');
+    if (btnDownloadAuditLog) {
+      btnDownloadAuditLog.addEventListener('click', () => {
+        if (!state.agentResult) return;
+        const blob = new Blob([JSON.stringify(state.agentResult, null, 2)], { type: 'application/json' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `cad_agent_audit_${state.agentResult.session_id}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      });
+    }
 
     function showSpinner(show) {
       if (show) processingIndicator.classList.add('active');
