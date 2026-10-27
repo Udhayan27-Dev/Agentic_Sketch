@@ -1,5 +1,8 @@
 /target
 __pycache__/
+temp_auto_push.bat
 *.py[cod]
 *$py.class
 .DS_Store
+.gitignore
+branch_structure.json
