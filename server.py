@@ -45,11 +45,34 @@ async def sample_handler(request):
     name = request.match_info.get("name", "")
     sample_path = os.path.join(os.path.dirname(__file__), f"{name}.png")
     if not os.path.exists(sample_path):
+        sample_path = os.path.join(os.path.dirname(__file__), "bracket_draft.png")
+    if not os.path.exists(sample_path):
         sample_path = os.path.join(os.path.dirname(__file__), "autodesk_primitive_preview.png")
     if os.path.exists(sample_path):
         with open(sample_path, "rb") as f:
             return web.Response(body=f.read(), content_type="image/png")
     return web.Response(status=404, text="Sample not found")
+
+
+async def process_handler(request):
+    """Fallback / standard process endpoint for background removal."""
+    try:
+        data = await request.json()
+        b64_str = data.get("image_base64", "")
+        if "," in b64_str:
+            b64_str = b64_str.split(",")[1]
+        image_bytes = base64.b64decode(b64_str)
+
+        result = agent.inspect_and_isolate(image_bytes)
+        return web.json_response({
+            "image_base64": result["isolated_geometry_base64"],
+            "processing_time_ms": result["total_execution_ms"],
+            "metrics": result["metrics"]
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return web.json_response({"error": str(e)}, status=500)
 
 
 async def inspect_handler(request):
@@ -91,6 +114,7 @@ def create_app():
     app.router.add_get("/", index_handler)
     app.router.add_get("/api/health", health_handler)
     app.router.add_get("/api/sample/{name}", sample_handler)
+    app.router.add_post("/api/process", process_handler)
     app.router.add_post("/api/agent/inspect", inspect_handler)
     app.router.add_static("/static/", os.path.join(os.path.dirname(__file__), "static"))
     return app
