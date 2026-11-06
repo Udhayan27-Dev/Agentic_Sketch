@@ -35,6 +35,8 @@ if not MODEL:
 elif OPENROUTER_KEY and not MODEL.startswith(('openrouter/', 'gemini-', 'gemma-')):
     MODEL = f'openrouter/{MODEL}'
 
+CAD_BACKEND = os.getenv('CAD_BACKEND', 'cadcraft').lower()
+CADCRAFT_CLI_CMD = shutil.which('cadcraft-cli') or '/usr/bin/cadcraft-cli'
 FREECAD_MCP_CMD = shutil.which('freecad-mcp') or str(Path(sys.executable).parent / 'freecad-mcp')
 
 class Entity(BaseModel):
@@ -216,6 +218,110 @@ Procedure:
 4. Summarize what was added/fixed so the Critic can re-evaluate on the next iteration of the loop.
 Rules: never invent tool names. Follow the Critic's rectification commands strictly."""
 
+DRAFTSMAN_CADCRAFT_PROMPT = """You are the Draftsman. Draw the FIRST DRAFT of this DrawingSpec in CADCraft (2D CAD).
+DrawingSpec: {drawing_spec}
+
+Procedure:
+1. Initialize drawing: call new_drawing(metric=True).
+2. Draw the actual physical part contours and cutouts (lines, arcs, circles):
+   - Do NOT draw dimension extension lines or outer bounding boxes.
+   - Use command_line or script with standard CAD commands:
+     * Lines: command_line(text="LINE x1,y1 x2,y2 ")
+     * Circles: command_line(text="CIRCLE cx,cy radius ")
+     * Arcs: command_line(text="ARC start_x,start_y via_x,via_y end_x,end_y ")
+     * Batch multiple commands at once using script(text="...").
+   - Use the geometry calculator tools (fillet_two_lines, circle_line_intersections, arc_angles) for exact numbers!
+   - Apply geometric and dimensional constraints using execute:
+     * Tangent: execute(command="gctangent", params=...)
+     * Coincident: execute(command="gccoincedent", params=...)
+     * Horizontal: execute(command="gchorizontal", params=...)
+     * Vertical: execute(command="gcvertical", params=...)
+     * Radius: execute(command="dcradius", params=...)
+3. Inspect and verify: call inspect_drawing(entities=True) to check entity counts and extents.
+4. Render screenshot: call render(fit=True, path="OUT.png") to capture the visual rendering for the Critic.
+5. Export DXF: call save(path="OUT.dxf").
+6. Conclude: Summarize what was drawn in this initial first draft.
+Rules: never invent tool names. Coordinates come only from the spec. At most 40 tool calls.
+
+DECICAD HARNESS PRINCIPLES (Semantic Decision Bottleneck & State Grounding):
+- Spatial Contract: Right-handed Cartesian coordinates (+X right, +Y back/up, +Z up), lengths in mm, angles in deg.
+- State Grounding: All actions execute against the active CADCraft drawing. Build incrementally; never restart from scratch when recovering.
+- Two-Tier Observation: Read execution feedback of each tool call. Check inspect_drawing or query_entities when state is uncertain.
+- Structured Error Recovery:
+  * InvalidInput: Check dimensions, use geometry calculators for exact numbers (4+ decimals).
+  * Conflict: Do not overconstrain. Tangent joints naturally ensure continuity.
+  * GeometryFailure: Degenerate or open loop. Ensure entity endpoints meet exactly.
+
+CURVES AND CORNERS. Never estimate arc endpoints or angles yourself.
+- Rounded corner between two lines: call fillet_two_lines. Draw each line
+  only up to the tangent point it returns. Draw the arc with the returned
+  center, radius, start_deg and end_deg.
+- Line tangent between two circles: tangent_lines_two_circles.
+- Line from a point tangent to a circle: tangent_from_point_to_circle.
+- Circle cut by another circle (notch): circle_circle_intersections, then
+  arc_angles with a point on the side to KEEP. Draw only the kept arcs.
+  Never use trim.
+- Arcs run counter-clockwise from start_deg to end_deg.
+- Use exact numbers from the tools, with at least 4 decimals.
+
+FLAT LINES MEETING A CIRCLE (seal and profile outlines). When a circle is
+merged into a flat line, never draw a half circle and never use trim.
+1. Call circle_line_intersections for each line against the circle and
+   choose the point on the drawn part of the outline.
+2. Call arc_angles with those two points and via_point = a point on the
+   circle on the side the outline keeps (for example the top). Draw only
+   that arc.
+3. Start or end each line AT the intersection point, so the arc and the
+   line share an exact endpoint.
+4. Build the outline as one closed loop in order. Check that each end
+   point equals the next start point before adding any constraint."""
+
+CRITIC_CADCRAFT_PROMPT = """You are the Visual Critic / Inspector of the CAD pipeline.
+Compare the current CADCraft 2D drawing screenshot directly against the ORIGINAL TECHNICAL DRAWING IMAGE uploaded by the user!
+Do NOT assume {drawing_spec} is complete — {drawing_spec} may be missing critical entities.
+
+Your Goal: Strictly inspect the visual geometry in CADCraft against the user's drawing image. Target accuracy is 98% and above.
+
+Procedure:
+1. Inspect the CADCraft drawing: call render(fit=True, path="OUT.png") to inspect the visual rendering.
+2. Conduct a strict visual audit across 5 mandatory checks:
+   - Check A (Base & Fillets): Base line (100 mm) and bottom corner fillets (R=3 mm).
+   - Check B (Left Profile): Lower vertical edge, left reverse bulge (R=8.65 mm), and left tangent transition.
+   - Check C (Main Outer Head): Top circular arc (R=55 mm, center 50,45).
+   - Check D (Right Protrusion & Slant): Right ear/protrusion at 60 deg angle (length 50 mm, width 12.5 mm, R=3 mm fillets) and slant down at 140 deg to base.
+   - Check E (Inner Features): Central bore hole (R=30 mm) and keyway slot/cutout at 20 deg angle.
+3. Strict Scoring Rules:
+   - If Check D (Right Protrusion / Slant) or Check E (Slot cutout) are MISSING from the CADCraft drawing:
+     ACCURACY SCORE CANNOT EXCEED 65.0%.
+     IT IS STRICTLY FORBIDDEN TO CALL exit_loop() WHEN ANY OF CHECKS A, B, C, D, E ARE MISSING.
+   - Score >= 98.0% ONLY IF ALL 5 CHECKS (A, B, C, D, E) are completely drawn, topologically connected, and match the dimensions.
+4. If accuracy_score >= 98.0:
+   - Call the exit_loop tool to complete the loop!
+   - Set is_accurate to True and summarize that the drawing meets the quality target (>= 98%).
+5. If accuracy_score < 98.0:
+   - Do NOT call exit_loop.
+   - Set is_accurate to False.
+   - In errors: detail each missing check with structured issue_type ('missing_feature', 'open_contour', 'geometry_conflict', 'dimension_mismatch', or 'invalid_state').
+   - In rectification_commands: provide exact CADCraft commands (command_line or execute) for the Refiner to execute (e.g. adding the missing lines, arcs, or circles).
+"""
+
+REFINER_CADCRAFT_PROMPT = """You are the CAD Refiner. Your job is to rectify errors reported by the Critic and update the CADCraft drawing.
+Critic Report:
+{critic_report}
+
+DrawingSpec:
+{drawing_spec}
+
+Procedure:
+1. Review the errors and rectification_commands from the Critic Report.
+2. Apply the corrections in CADCraft:
+   - Execute the Critic's rectification commands using command_line or execute to add the missing geometry (arcs, lines, circles, slots) into the active drawing.
+   - Follow DeciCAD state grounding: modify the active drawing incrementally; never recreate the drawing from scratch.
+   - Ensure new geometry endpoints connect properly to form closed loops.
+3. Call render(fit=True, path="OUT.png") to capture the updated drawing.
+4. Summarize what was added/fixed so the Critic can re-evaluate on the next iteration of the loop.
+Rules: never invent tool names. Follow the Critic's rectification commands strictly."""
+
 import asyncio
 import time
 from google.genai import types
@@ -253,29 +359,55 @@ analyst = LlmAgent(
     before_model_callback=_pace_free_tier
 )
 
-freecad = McpToolset(
-    connection_params=StdioConnectionParams(
-        server_params=StdioServerParameters(
-            command=FREECAD_MCP_CMD,
-            env=dict(os.environ, FREECAD_MODE='xmlrpc')
+if CAD_BACKEND == 'cadcraft':
+    active_cad = McpToolset(
+        connection_params=StdioConnectionParams(
+            server_params=StdioServerParameters(
+                command=CADCRAFT_CLI_CMD,
+                args=['mcp']
+            ),
+            timeout=60
         ),
-        timeout=60
-    ),
-    tool_filter=[
-        'create_document', 'create_partdesign_body', 'create_sketch',
-        'add_sketch_line', 'add_sketch_circle', 'add_sketch_arc',
-        'add_sketch_rectangle', 'add_sketch_point', 'recompute_document',
-        'inspect_object', 'list_objects', 'undo', 'save_document',
-        'fit_all', 'get_screenshot', 'execute_python'
-    ]
-)
+        tool_filter=[
+            'new_drawing', 'command_line', 'script', 'execute',
+            'render', 'save', 'inspect_drawing', 'query_entities',
+            'cancel', 'list_commands'
+        ]
+    )
+    draftsman_instruction = DRAFTSMAN_CADCRAFT_PROMPT
+    critic_instruction = CRITIC_CADCRAFT_PROMPT
+    refiner_instruction = REFINER_CADCRAFT_PROMPT
+else:
+    active_cad = McpToolset(
+        connection_params=StdioConnectionParams(
+            server_params=StdioServerParameters(
+                command=FREECAD_MCP_CMD,
+                env=dict(os.environ, FREECAD_MODE='xmlrpc')
+            ),
+            timeout=60
+        ),
+        tool_filter=[
+            'create_document', 'create_partdesign_body', 'create_sketch',
+            'add_sketch_line', 'add_sketch_circle', 'add_sketch_arc',
+            'add_sketch_rectangle', 'add_sketch_point', 'recompute_document',
+            'inspect_object', 'list_objects', 'undo', 'save_document',
+            'fit_all', 'get_screenshot', 'execute_python'
+        ]
+    )
+    draftsman_instruction = DRAFTSMAN_PROMPT
+    critic_instruction = CRITIC_PROMPT
+    refiner_instruction = REFINER_PROMPT
+
+# Keep alias references for backward compatibility
+freecad = active_cad
+cadcraft = active_cad
 
 draftsman = LlmAgent(
     name='draftsman',
     model=MODEL,
-    instruction=DRAFTSMAN_PROMPT,
+    instruction=draftsman_instruction,
     tools=[
-        freecad,
+        active_cad,
         fillet_two_lines,
         tangent_lines_two_circles,
         tangent_from_point_to_circle,
@@ -291,8 +423,8 @@ draftsman = LlmAgent(
 critic = LlmAgent(
     name='critic',
     model=MODEL,
-    instruction=CRITIC_PROMPT,
-    tools=[freecad, exit_loop],
+    instruction=critic_instruction,
+    tools=[active_cad, exit_loop],
     output_schema=CriticReport,
     output_key='critic_report',
     retry_config=retry_policy,
@@ -303,8 +435,8 @@ critic = LlmAgent(
 refiner = LlmAgent(
     name='refiner',
     model=MODEL,
-    instruction=REFINER_PROMPT,
-    tools=[freecad],
+    instruction=refiner_instruction,
+    tools=[active_cad],
     retry_config=retry_policy,
     generate_content_config=gen_config,
     before_model_callback=_pace_free_tier

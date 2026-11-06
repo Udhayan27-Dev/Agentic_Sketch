@@ -1,12 +1,12 @@
 # sketchcad
 
-**sketchcad** is a Google ADK (Agent Development Kit) application that converts an uploaded 2D technical drawing (image or PDF) into a live, parametric drawing inside FreeCAD via MCP (Model Context Protocol).
+**sketchcad** is a Google ADK (Agent Development Kit) application that converts an uploaded 2D technical drawing (image or PDF) into a live, parametric CAD drawing via MCP (Model Context Protocol). It supports both **CADCraft** (headless 2D CAD via `cadcraft-cli mcp`, default) and **FreeCAD** (via `freecad-robust-mcp`).
 
 ---
 
 ## Architecture Overview
 
-sketchcad implements a sequential 2-agent pipeline:
+sketchcad implements a self-refining DeciCAD multi-agent pipeline:
 
 1. **Analyst (`analyst`)**:
    - Multimodal vision agent powered by `gemini-3.5-flash`.
@@ -17,8 +17,14 @@ sketchcad implements a sequential 2-agent pipeline:
 2. **Draftsman (`draftsman`)**:
    - CAD execution agent powered by `gemini-3.5-flash`.
    - Reads `{drawing_spec}` from session state.
-   - Interacts with FreeCAD through `freecad-robust-mcp` (`freecad-mcp` in XML-RPC mode on `localhost:9875`).
-   - Uses a filtered set of 15 tools: creates document, PartDesign body, XY sketch, draws entities, applies geometric/dimensional constraints, verifies solver status, captures screenshots, and exports DXF.
+   - By default, interacts with **CADCraft** through `cadcraft-cli mcp` stdio server.
+   - Alternatively supports **FreeCAD** through `freecad-robust-mcp` (XML-RPC mode on `localhost:9875`).
+   - Uses exact geometry calculator tools (`fillet_two_lines`, `tangent_lines_two_circles`, `circle_line_intersections`, `arc_angles`) for high-precision contour generation without manual trimming.
+
+3. **Critic & Refiner Loop (`refinement_loop`)**:
+   - Compares the rendered screenshot directly against the original technical drawing.
+   - Enforces a 5-point visual audit (Base & Fillets, Left Profile & Bulge, Outer Head, Right Ear Protrusion & Slant, Inner Bore & Keyway Slot).
+   - Loops autonomously with the Refiner to reach $\ge 98\%$ visual fidelity before concluding.
 
 ---
 
