@@ -371,7 +371,7 @@ if CAD_BACKEND == 'cadcraft':
         tool_filter=[
             'new_drawing', 'command_line', 'script', 'execute',
             'render', 'save', 'inspect_drawing', 'query_entities',
-            'cancel', 'list_commands'
+            'find_text', 'open', 'cancel', 'list_commands'
         ]
     )
     draftsman_instruction = DRAFTSMAN_CADCRAFT_PROMPT
