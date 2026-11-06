@@ -111,3 +111,22 @@ def test_critic_report_schema():
     assert len(error_report.errors) == 1
     assert error_report.errors[0].issue_type == "open_contour"
 
+
+def test_drawing_spec_with_annotations():
+    from sketchcad_agent.agent import TextAnnotation
+
+    spec = DrawingSpec(
+        units="mm",
+        entities=[Entity(id="e1", type="line", p1=[0, 0], p2=[100, 0])],
+        relations=[],
+        annotations=[
+            TextAnnotation(text="R30", position=[50.0, 45.0], height=3.5, rotation_deg=0.0),
+            TextAnnotation(text="SLOT 20 DEG", position=[70.0, 30.0], height=2.5, rotation_deg=20.0),
+        ],
+        assumptions=[],
+        unreadable=[],
+    )
+    assert len(spec.annotations) == 2
+    assert spec.annotations[0].text == "R30"
+    assert spec.annotations[1].rotation_deg == 20.0
+

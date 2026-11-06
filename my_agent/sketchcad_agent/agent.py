@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Literal, Optional
@@ -39,6 +40,47 @@ CAD_BACKEND = os.getenv('CAD_BACKEND', 'cadcraft').lower()
 CADCRAFT_CLI_CMD = shutil.which('cadcraft-cli') or '/usr/bin/cadcraft-cli'
 FREECAD_MCP_CMD = shutil.which('freecad-mcp') or str(Path(sys.executable).parent / 'freecad-mcp')
 
+_cadcraft_gui_proc = None
+
+def open_in_cadcraft_gui(file_path: str = "OUT.dxf") -> str:
+    """Opens CADCraft desktop GUI application with the generated CAD file to showcase the output directly on screen.
+
+    Args:
+        file_path: Relative or absolute path to the DXF or DWG file (defaults to 'OUT.dxf').
+    """
+    global _cadcraft_gui_proc
+    cadcraft_gui = shutil.which('cadcraft') or '/usr/bin/cadcraft'
+    abs_path = os.path.abspath(file_path)
+    if not os.path.exists(abs_path):
+        return f"Error: CAD file not found at {abs_path}. Please save the drawing first using save(path='{file_path}')."
+
+    # Close previous GUI preview window if still running to cleanly refresh
+    if _cadcraft_gui_proc is not None and _cadcraft_gui_proc.poll() is None:
+        try:
+            _cadcraft_gui_proc.terminate()
+            _cadcraft_gui_proc.wait(timeout=1.0)
+        except Exception:
+            pass
+
+    env = dict(os.environ)
+    if 'DISPLAY' not in env:
+        env['DISPLAY'] = ':0'
+    uid = os.getuid()
+    if 'WAYLAND_DISPLAY' not in env and os.path.exists(f'/run/user/{uid}/wayland-1'):
+        env['WAYLAND_DISPLAY'] = 'wayland-1'
+
+    try:
+        _cadcraft_gui_proc = subprocess.Popen(
+            [cadcraft_gui, abs_path],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+        return f"Successfully opened CADCraft GUI with {abs_path} (PID {_cadcraft_gui_proc.pid}). The CADCraft application is now showcasing the drawing directly on your screen."
+    except Exception as e:
+        return f"Failed to open CADCraft GUI: {e}"
+
 class Entity(BaseModel):
     id: str
     type: Literal['line', 'circle', 'arc']
@@ -54,10 +96,17 @@ class Relation(BaseModel):
     refs: list[str]
     value_mm: Optional[float] = None
 
+class TextAnnotation(BaseModel):
+    text: str
+    position: list[float]  # [x, y] coordinates in mm
+    height: Optional[float] = 3.0  # text height in mm
+    rotation_deg: Optional[float] = 0.0
+
 class DrawingSpec(BaseModel):
     units: Literal['mm']
     entities: list[Entity]
     relations: list[Relation]
+    annotations: list[TextAnnotation] = []
     assumptions: list[str]
     unreadable: list[str]
 
@@ -114,7 +163,11 @@ Rules:
   Draw lines to the sharp corner they would meet at. Add a relation of kind
   fillet (refs: the two line ids, value_mm: the radius). Give circles as
   center and radius. Add tangent relations between lines and circles. Do
-  not compute arc endpoints or angles: the Draftsman has tools for that."""
+  not compute arc endpoints or angles: the Draftsman has tools for that.
+- Text & Annotations: Detect and extract all text, callouts, notes, and labels
+  (e.g. 'R30', 'R55', '50.0', '100', 'KEYWAY', 'SECTION A-A') into annotations:
+  list of TextAnnotation objects with text, position [x, y] in mm, height in mm
+  (default 3.0), and rotation_deg (default 0.0)."""
 
 DRAFTSMAN_PROMPT = """You are the Draftsman. Draw the FIRST DRAFT of this DrawingSpec in FreeCAD on the 2D draft plane.
 DrawingSpec: {drawing_spec}
@@ -224,7 +277,7 @@ DrawingSpec: {drawing_spec}
 Procedure:
 1. Initialize drawing: call new_drawing(metric=True).
 2. Draw the actual physical part contours and cutouts (lines, arcs, circles):
-   - Do NOT draw dimension extension lines or outer bounding boxes.
+   - Do NOT draw outer bounding boxes.
    - Use command_line or script with standard CAD commands:
      * Lines: command_line(text="LINE x1,y1 x2,y2 ")
      * Circles: command_line(text="CIRCLE cx,cy radius ")
@@ -237,10 +290,28 @@ Procedure:
      * Horizontal: execute(command="gchorizontal", params=...)
      * Vertical: execute(command="gcvertical", params=...)
      * Radius: execute(command="dcradius", params=...)
-3. Inspect and verify: call inspect_drawing(entities=True) to check entity counts and extents.
-4. Render screenshot: call render(fit=True, path="OUT.png") to capture the visual rendering for the Critic.
-5. Export DXF: call save(path="OUT.dxf").
-6. Conclude: Summarize what was drawn in this initial first draft.
+
+3. SHOW DIMENSIONS FOR EACH LINE & FEATURE (MANDATORY):
+   Draw dimensions for the lines, arcs, circles, and features so dimensions are shown while viewing:
+   - Linear Dimensions: execute(command="dimlinear", params={"p1": [x1, y1], "p2": [x2, y2], "at": [at_x, at_y]})
+     where [at_x, at_y] is offset 5 to 10 mm away from the line outside the contour.
+   - Radial / Diameter Dimensions: execute(command="dimradius", params={"center": [cx, cy], "point": [px, py]})
+     or command_line(text="DIMRADIUS handle at ") for circles, arcs, and fillet curves.
+   - Aligned Dimensions: execute(command="dimaligned", params={"p1": [x1, y1], "p2": [x2, y2], "at": [at_x, at_y]})
+     for slanted/angled edges.
+
+4. DRAW TEXT AND LABELS (MANDATORY):
+   If there are text annotations in drawing_spec.annotations:
+   - For every text item in drawing_spec.annotations, render it using CADCraft vector font text:
+     execute(command="text", params={"at": [x, y], "text": "...", "height": height or 3.0, "rotation": rotation_deg or 0.0})
+     or command_line(text="TEXT x,y height rotation text ")
+     This replaces detected image text with crisp CAD fonts in the exact specified position!
+
+5. Inspect and verify: call inspect_drawing(entities=True) to check entity counts and extents.
+6. Render screenshot: call render(fit=True, path="OUT.png") to capture the visual rendering for the Critic.
+7. Export DXF: call save(path="OUT.dxf").
+8. Showcase in CADCraft GUI: call open_in_cadcraft_gui(file_path="OUT.dxf") so the CADCraft desktop application opens and showcases the final drawing directly on the user's screen!
+9. Conclude: Summarize what was drawn, dimensioned, annotated with text, and showcased in CADCraft.
 Rules: never invent tool names. Coordinates come only from the spec. At most 40 tool calls.
 
 DECICAD HARNESS PRINCIPLES (Semantic Decision Bottleneck & State Grounding):
@@ -280,7 +351,7 @@ CRITIC_CADCRAFT_PROMPT = """You are the Visual Critic / Inspector of the CAD pip
 Compare the current CADCraft 2D drawing screenshot directly against the ORIGINAL TECHNICAL DRAWING IMAGE uploaded by the user!
 Do NOT assume {drawing_spec} is complete — {drawing_spec} may be missing critical entities.
 
-Your Goal: Strictly inspect the visual geometry in CADCraft against the user's drawing image. Target accuracy is 98% and above.
+Your Goal: Strictly inspect the visual geometry, dimensions, and text annotations in CADCraft against the user's drawing image. Target accuracy is 98% and above.
 
 Procedure:
 1. Inspect the CADCraft drawing: call render(fit=True, path="OUT.png") to inspect the visual rendering.
@@ -289,20 +360,21 @@ Procedure:
    - Check B (Left Profile): Lower vertical edge, left reverse bulge (R=8.65 mm), and left tangent transition.
    - Check C (Main Outer Head): Top circular arc (R=55 mm, center 50,45).
    - Check D (Right Protrusion & Slant): Right ear/protrusion at 60 deg angle (length 50 mm, width 12.5 mm, R=3 mm fillets) and slant down at 140 deg to base.
-   - Check E (Inner Features): Central bore hole (R=30 mm) and keyway slot/cutout at 20 deg angle.
+   - Check E (Inner Features & Annotations): Central bore hole (R=30 mm), keyway slot at 20 deg, visible line dimensions, and text annotations.
 3. Strict Scoring Rules:
    - If Check D (Right Protrusion / Slant) or Check E (Slot cutout) are MISSING from the CADCraft drawing:
      ACCURACY SCORE CANNOT EXCEED 65.0%.
      IT IS STRICTLY FORBIDDEN TO CALL exit_loop() WHEN ANY OF CHECKS A, B, C, D, E ARE MISSING.
-   - Score >= 98.0% ONLY IF ALL 5 CHECKS (A, B, C, D, E) are completely drawn, topologically connected, and match the dimensions.
+   - Score >= 98.0% ONLY IF ALL 5 CHECKS (A, B, C, D, E) are completely drawn, topologically connected, dimensioned, and match the technical drawing.
 4. If accuracy_score >= 98.0:
+   - Call open_in_cadcraft_gui(file_path="OUT.dxf") to ensure the final drawing is showcased on the user's screen in CADCraft GUI!
    - Call the exit_loop tool to complete the loop!
    - Set is_accurate to True and summarize that the drawing meets the quality target (>= 98%).
 5. If accuracy_score < 98.0:
    - Do NOT call exit_loop.
    - Set is_accurate to False.
    - In errors: detail each missing check with structured issue_type ('missing_feature', 'open_contour', 'geometry_conflict', 'dimension_mismatch', or 'invalid_state').
-   - In rectification_commands: provide exact CADCraft commands (command_line or execute) for the Refiner to execute (e.g. adding the missing lines, arcs, or circles).
+   - In rectification_commands: provide exact CADCraft commands (command_line or execute) for the Refiner to execute (e.g. adding missing lines, arcs, dimensions, or text).
 """
 
 REFINER_CADCRAFT_PROMPT = """You are the CAD Refiner. Your job is to rectify errors reported by the Critic and update the CADCraft drawing.
@@ -315,11 +387,13 @@ DrawingSpec:
 Procedure:
 1. Review the errors and rectification_commands from the Critic Report.
 2. Apply the corrections in CADCraft:
-   - Execute the Critic's rectification commands using command_line or execute to add the missing geometry (arcs, lines, circles, slots) into the active drawing.
+   - Execute the Critic's rectification commands using command_line or execute to add the missing geometry (arcs, lines, circles, slots, dimensions, text) into the active drawing.
    - Follow DeciCAD state grounding: modify the active drawing incrementally; never recreate the drawing from scratch.
    - Ensure new geometry endpoints connect properly to form closed loops.
-3. Call render(fit=True, path="OUT.png") to capture the updated drawing.
-4. Summarize what was added/fixed so the Critic can re-evaluate on the next iteration of the loop.
+3. Call save(path="OUT.dxf").
+4. Call open_in_cadcraft_gui(file_path="OUT.dxf") to update the live CADCraft GUI window on the screen.
+5. Call render(fit=True, path="OUT.png") to capture the updated drawing.
+6. Summarize what was added/fixed so the Critic can re-evaluate on the next iteration of the loop.
 Rules: never invent tool names. Follow the Critic's rectification commands strictly."""
 
 import asyncio
@@ -408,6 +482,7 @@ draftsman = LlmAgent(
     instruction=draftsman_instruction,
     tools=[
         active_cad,
+        open_in_cadcraft_gui,
         fillet_two_lines,
         tangent_lines_two_circles,
         tangent_from_point_to_circle,
@@ -424,7 +499,7 @@ critic = LlmAgent(
     name='critic',
     model=MODEL,
     instruction=critic_instruction,
-    tools=[active_cad, exit_loop],
+    tools=[active_cad, open_in_cadcraft_gui, exit_loop],
     output_schema=CriticReport,
     output_key='critic_report',
     retry_config=retry_policy,
@@ -436,7 +511,7 @@ refiner = LlmAgent(
     name='refiner',
     model=MODEL,
     instruction=refiner_instruction,
-    tools=[active_cad],
+    tools=[active_cad, open_in_cadcraft_gui],
     retry_config=retry_policy,
     generate_content_config=gen_config,
     before_model_callback=_pace_free_tier
