@@ -164,6 +164,11 @@ Rules:
   fillet (refs: the two line ids, value_mm: the radius). Give circles as
   center and radius. Add tangent relations between lines and circles. Do
   not compute arc endpoints or angles: the Draftsman has tools for that.
+- Strict Origin Anchoring at (0.0, 0.0):
+  * The origin (0.0, 0.0) MUST be fixed at the starting vertex of the main contour (bottom-left corner / base start).
+  * Entity e1 MUST begin at p1 = [0.0, 0.0].
+  * EVERY line endpoint, circle center, arc center, dimension offset, and text annotation position MUST be calculated and specified strictly in reference to this (0.0, 0.0) origin.
+  * In assumptions, always explicitly include: "Origin (0.0, 0.0) is fixed at the base starting point; all coordinates are referenced from this origin."
 - Text & Annotations: Detect and extract all text, callouts, notes, and labels
   (e.g. 'R30', 'R55', '50.0', '100', 'KEYWAY', 'SECTION A-A') into annotations:
   list of TextAnnotation objects with text, position [x, y] in mm, height in mm
@@ -276,7 +281,11 @@ DrawingSpec: {drawing_spec}
 
 Procedure:
 1. Initialize drawing: call new_drawing(metric=True).
-2. Draw the actual physical part contours and cutouts (lines, arcs, circles):
+2. STRICT (0.0, 0.0) ORIGIN ANCHORING (MANDATORY):
+   - You MUST begin drawing starting from the origin point (0.0, 0.0).
+   - The first entity command MUST begin at exactly (0.0, 0.0), e.g. command_line(text="LINE 0.0,0.0 <x2>,<y2> ").
+   - EVERY subsequent line, arc, circle, cutout, slot, dimension, and text annotation MUST be drawn with coordinates referenced strictly relative to that (0.0, 0.0) origin point.
+   - Build a continuous topological chain starting from (0.0, 0.0) around the part geometry so that every single coordinate is referenced back to (0.0, 0.0).
    - Do NOT draw outer bounding boxes.
    - Use command_line or script with standard CAD commands:
      * Lines: command_line(text="LINE x1,y1 x2,y2 ")
@@ -305,7 +314,7 @@ Procedure:
    - For every text item in drawing_spec.annotations, render it using CADCraft vector font text:
      execute(command="text", params={"at": [x, y], "text": "...", "height": height or 3.0, "rotation": rotation_deg or 0.0})
      or command_line(text="TEXT x,y height rotation text ")
-     This replaces detected image text with crisp CAD fonts in the exact specified position!
+     This replaces detected image text with crisp CAD fonts in the exact specified position referenced from (0.0, 0.0)!
 
 5. Inspect and verify: call inspect_drawing(entities=True) to check entity counts and extents.
 6. Render screenshot: call render(fit=True, path="OUT.png") to capture the visual rendering for the Critic.
@@ -315,7 +324,7 @@ Procedure:
 Rules: never invent tool names. Coordinates come only from the spec. At most 40 tool calls.
 
 DECICAD HARNESS PRINCIPLES (Semantic Decision Bottleneck & State Grounding):
-- Spatial Contract: Right-handed Cartesian coordinates (+X right, +Y back/up, +Z up), lengths in mm, angles in deg.
+- Spatial Contract: Right-handed Cartesian coordinates (+X right, +Y back/up, +Z up), lengths in mm, angles in deg, origin anchored at (0.0, 0.0).
 - State Grounding: All actions execute against the active CADCraft drawing. Build incrementally; never restart from scratch when recovering.
 - Two-Tier Observation: Read execution feedback of each tool call. Check inspect_drawing or query_entities when state is uncertain.
 - Structured Error Recovery:
@@ -351,21 +360,22 @@ CRITIC_CADCRAFT_PROMPT = """You are the Visual Critic / Inspector of the CAD pip
 Compare the current CADCraft 2D drawing screenshot directly against the ORIGINAL TECHNICAL DRAWING IMAGE uploaded by the user!
 Do NOT assume {drawing_spec} is complete — {drawing_spec} may be missing critical entities.
 
-Your Goal: Strictly inspect the visual geometry, dimensions, and text annotations in CADCraft against the user's drawing image. Target accuracy is 98% and above.
+Your Goal: Strictly inspect the visual geometry, dimensions, text annotations, and origin grounding in CADCraft against the user's drawing image. Target accuracy is 98% and above.
 
 Procedure:
 1. Inspect the CADCraft drawing: call render(fit=True, path="OUT.png") to inspect the visual rendering.
-2. Conduct a strict visual audit across 5 mandatory checks:
-   - Check A (Base & Fillets): Base line (100 mm) and bottom corner fillets (R=3 mm).
+2. Conduct a strict visual audit across mandatory checks:
+   - Check 0 (Origin Grounding): Drawing MUST start at origin (0.0, 0.0) with all coordinates referenced from (0.0, 0.0).
+   - Check A (Base & Fillets): Base line (100 mm) starting at (0.0, 0.0) and corner fillets (R=3 mm).
    - Check B (Left Profile): Lower vertical edge, left reverse bulge (R=8.65 mm), and left tangent transition.
    - Check C (Main Outer Head): Top circular arc (R=55 mm, center 50,45).
    - Check D (Right Protrusion & Slant): Right ear/protrusion at 60 deg angle (length 50 mm, width 12.5 mm, R=3 mm fillets) and slant down at 140 deg to base.
    - Check E (Inner Features & Annotations): Central bore hole (R=30 mm), keyway slot at 20 deg, visible line dimensions, and text annotations.
 3. Strict Scoring Rules:
-   - If Check D (Right Protrusion / Slant) or Check E (Slot cutout) are MISSING from the CADCraft drawing:
+   - If Check 0 (Origin at 0.0, 0.0), Check D (Right Protrusion / Slant) or Check E (Slot cutout) are MISSING from the CADCraft drawing:
      ACCURACY SCORE CANNOT EXCEED 65.0%.
-     IT IS STRICTLY FORBIDDEN TO CALL exit_loop() WHEN ANY OF CHECKS A, B, C, D, E ARE MISSING.
-   - Score >= 98.0% ONLY IF ALL 5 CHECKS (A, B, C, D, E) are completely drawn, topologically connected, dimensioned, and match the technical drawing.
+     IT IS STRICTLY FORBIDDEN TO CALL exit_loop() WHEN ANY OF CHECKS 0, A, B, C, D, E ARE MISSING.
+   - Score >= 98.0% ONLY IF ALL CHECKS (0, A, B, C, D, E) are completely drawn, topologically connected, dimensioned, anchored to (0.0, 0.0), and match the technical drawing.
 4. If accuracy_score >= 98.0:
    - Call open_in_cadcraft_gui(file_path="OUT.dxf") to ensure the final drawing is showcased on the user's screen in CADCraft GUI!
    - Call the exit_loop tool to complete the loop!
@@ -374,7 +384,7 @@ Procedure:
    - Do NOT call exit_loop.
    - Set is_accurate to False.
    - In errors: detail each missing check with structured issue_type ('missing_feature', 'open_contour', 'geometry_conflict', 'dimension_mismatch', or 'invalid_state').
-   - In rectification_commands: provide exact CADCraft commands (command_line or execute) for the Refiner to execute (e.g. adding missing lines, arcs, dimensions, or text).
+   - In rectification_commands: provide exact CADCraft commands (command_line or execute) for the Refiner to execute (e.g. adding missing lines, arcs, dimensions, or text anchored to origin).
 """
 
 REFINER_CADCRAFT_PROMPT = """You are the CAD Refiner. Your job is to rectify errors reported by the Critic and update the CADCraft drawing.
@@ -389,6 +399,7 @@ Procedure:
 2. Apply the corrections in CADCraft:
    - Execute the Critic's rectification commands using command_line or execute to add the missing geometry (arcs, lines, circles, slots, dimensions, text) into the active drawing.
    - Follow DeciCAD state grounding: modify the active drawing incrementally; never recreate the drawing from scratch.
+   - Maintain strict origin grounding: ensure all geometry is positioned relative to the (0.0, 0.0) origin.
    - Ensure new geometry endpoints connect properly to form closed loops.
 3. Call save(path="OUT.dxf").
 4. Call open_in_cadcraft_gui(file_path="OUT.dxf") to update the live CADCraft GUI window on the screen.

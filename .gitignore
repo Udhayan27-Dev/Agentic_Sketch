@@ -8,7 +8,6 @@ venv/
 ENV/
 
 # Environment and secrets
-.env
 *.env
 !.env.example
 
@@ -24,3 +23,5 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+config.bat
+node_modules
