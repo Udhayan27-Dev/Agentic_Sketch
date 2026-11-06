@@ -1,0 +1,22 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Environment and secrets
+.env
+*.env
+!.env.example
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ADK and caches
+.adk/
+.pytest_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
