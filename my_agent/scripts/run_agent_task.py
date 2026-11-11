@@ -10,7 +10,9 @@ from google.adk.runners import InMemoryRunner
 load_dotenv()
 
 async def main():
-    img_path = '/home/udhayan/.gemini/antigravity/brain/57f5082b-df03-439c-bcdf-d07b69293d45/.user_uploaded/media_1793864437518_2685728f.png'
+    img_path = '/home/udhayan/Agent/my_agent/harness/plug_gauge_harness.png'
+    if not os.path.exists(img_path):
+        img_path = '/home/udhayan/.gemini/antigravity/brain/57f5082b-df03-439c-bcdf-d07b69293d45/.user_uploaded/media_1793864437518_2685728f.png'
     if not os.path.exists(img_path):
         print(f"Error: image {img_path} not found.")
         sys.exit(1)

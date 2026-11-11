@@ -1,0 +1,233 @@
+{
+  "units": "mm",
+  "entities": [
+    {
+      "id": "e1",
+      "type": "line",
+      "p1": [
+        8.0,
+        0.0
+      ],
+      "p2": [
+        132.0,
+        0.0
+      ]
+    },
+    {
+      "id": "e2",
+      "type": "arc",
+      "center": [
+        132.0,
+        8.0
+      ],
+      "radius": 8.0,
+      "start_deg": 270.0,
+      "end_deg": 0.0
+    },
+    {
+      "id": "e3",
+      "type": "line",
+      "p1": [
+        140.0,
+        8.0
+      ],
+      "p2": [
+        140.0,
+        62.0
+      ]
+    },
+    {
+      "id": "e4",
+      "type": "arc",
+      "center": [
+        132.0,
+        62.0
+      ],
+      "radius": 8.0,
+      "start_deg": 0.0,
+      "end_deg": 90.0
+    },
+    {
+      "id": "e5",
+      "type": "line",
+      "p1": [
+        132.0,
+        70.0
+      ],
+      "p2": [
+        8.0,
+        70.0
+      ]
+    },
+    {
+      "id": "e6",
+      "type": "arc",
+      "center": [
+        8.0,
+        62.0
+      ],
+      "radius": 8.0,
+      "start_deg": 90.0,
+      "end_deg": 180.0
+    },
+    {
+      "id": "e7",
+      "type": "line",
+      "p1": [
+        0.0,
+        62.0
+      ],
+      "p2": [
+        0.0,
+        8.0
+      ]
+    },
+    {
+      "id": "e8",
+      "type": "arc",
+      "center": [
+        8.0,
+        8.0
+      ],
+      "radius": 8.0,
+      "start_deg": 180.0,
+      "end_deg": 270.0
+    },
+    {
+      "id": "e9",
+      "type": "circle",
+      "center": [
+        70.0,
+        35.0
+      ],
+      "radius": 10.0
+    }
+  ],
+  "relations": [
+    {
+      "kind": "horizontal",
+      "refs": [
+        "e1"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "tangent",
+      "refs": [
+        "e1",
+        "e2"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "vertical",
+      "refs": [
+        "e3"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "tangent",
+      "refs": [
+        "e3",
+        "e4"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "horizontal",
+      "refs": [
+        "e5"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "tangent",
+      "refs": [
+        "e5",
+        "e6"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "vertical",
+      "refs": [
+        "e7"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "tangent",
+      "refs": [
+        "e7",
+        "e8"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "tangent",
+      "refs": [
+        "e8",
+        "e1"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "fillet",
+      "refs": [
+        "e1",
+        "e3"
+      ],
+      "value_mm": 8.0
+    },
+    {
+      "kind": "fillet",
+      "refs": [
+        "e3",
+        "e5"
+      ],
+      "value_mm": 8.0
+    },
+    {
+      "kind": "fillet",
+      "refs": [
+        "e5",
+        "e7"
+      ],
+      "value_mm": 8.0
+    },
+    {
+      "kind": "fillet",
+      "refs": [
+        "e7",
+        "e1"
+      ],
+      "value_mm": 8.0
+    }
+  ],
+  "annotations": [
+    {
+      "text": "CORNER FILLET PLATE R8.0",
+      "position": [
+        10.0,
+        85.0
+      ],
+      "height": 3.0,
+      "rotation_deg": 0.0
+    },
+    {
+      "text": "ALL FILLETS R TYP 4 PLCS",
+      "position": [
+        45.0,
+        -28.0
+      ],
+      "height": 3.0,
+      "rotation_deg": 0.0
+    }
+  ],
+  "assumptions": [
+    "Origin (0.0, 0.0) is fixed at the base starting point; all coordinates are referenced from this origin.",
+    "Shape category: corner_fillets."
+  ],
+  "unreadable": []
+}

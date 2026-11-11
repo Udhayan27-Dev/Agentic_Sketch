@@ -1,0 +1,3 @@
+# CADCraft script for cad_practice_129
+# Generated from cad_practice_drawing_129.dxf
+save(path='cad_practice_129.dxf')

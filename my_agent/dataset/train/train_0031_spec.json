@@ -1,0 +1,127 @@
+{
+  "units": "mm",
+  "entities": [
+    {
+      "id": "e1",
+      "type": "line",
+      "p1": [
+        25.3125,
+        49.998
+      ],
+      "p2": [
+        105.3,
+        48.9981
+      ]
+    },
+    {
+      "id": "e2",
+      "type": "arc",
+      "center": [
+        105.0,
+        25.0
+      ],
+      "radius": 24.0,
+      "start_deg": 270.7162,
+      "end_deg": 89.2838
+    },
+    {
+      "id": "e3",
+      "type": "line",
+      "p1": [
+        105.3,
+        1.0019
+      ],
+      "p2": [
+        25.3125,
+        0.002
+      ]
+    },
+    {
+      "id": "e4",
+      "type": "arc",
+      "center": [
+        25.0,
+        25.0
+      ],
+      "radius": 25.0,
+      "start_deg": 89.2838,
+      "end_deg": 270.7162
+    },
+    {
+      "id": "e5",
+      "type": "circle",
+      "center": [
+        25.0,
+        25.0
+      ],
+      "radius": 12.0
+    },
+    {
+      "id": "e6",
+      "type": "circle",
+      "center": [
+        105.0,
+        25.0
+      ],
+      "radius": 6.0
+    }
+  ],
+  "relations": [
+    {
+      "kind": "tangent",
+      "refs": [
+        "e4",
+        "e1"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "tangent",
+      "refs": [
+        "e1",
+        "e2"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "tangent",
+      "refs": [
+        "e2",
+        "e3"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "tangent",
+      "refs": [
+        "e3",
+        "e4"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "distance",
+      "refs": [
+        "e5",
+        "e6"
+      ],
+      "value_mm": 80.0
+    }
+  ],
+  "annotations": [
+    {
+      "text": "TANGENT BELT PROFILE (TYP 2 PLCS)",
+      "position": [
+        25.0,
+        65.0
+      ],
+      "height": 3.0,
+      "rotation_deg": 0.0
+    }
+  ],
+  "assumptions": [
+    "Origin (0.0, 0.0) is fixed at the base starting point; all coordinates are referenced from this origin.",
+    "Shape category: tangent_profile."
+  ],
+  "unreadable": []
+}

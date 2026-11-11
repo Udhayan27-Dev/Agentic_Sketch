@@ -1,0 +1,2 @@
+# Plug gauge benchmark script
+save(path='plug_gauge_benchmark.dxf')

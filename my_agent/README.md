@@ -56,8 +56,11 @@ sketchcad implements a self-refining DeciCAD multi-agent pipeline:
    ```
    Ensure `.env` contains:
    ```env
-   GOOGLE_API_KEY=your_gemini_api_key_here
-   SKETCHCAD_MODEL=gemini-3.5-flash
+   OPENAI_BASE_URL=https://l77ji2cxqtxy6shj7kqy4ftwya0qyewy.lambda-url.us-east-1.on.aws/v1
+   OPENAI_API_BASE=https://l77ji2cxqtxy6shj7kqy4ftwya0qyewy.lambda-url.us-east-1.on.aws/v1
+   OPENAI_API_KEY=your_api_key_here
+   SKETCHCAD_MODEL=openai/qwen3.8-27b
+   CAD_BACKEND=cadcraft
    ```
 
 ---

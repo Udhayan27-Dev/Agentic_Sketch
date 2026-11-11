@@ -1,0 +1,125 @@
+{
+  "units": "mm",
+  "entities": [
+    {
+      "id": "e1",
+      "type": "circle",
+      "center": [
+        55.0,
+        55.0
+      ],
+      "radius": 55.0
+    },
+    {
+      "id": "e2",
+      "type": "line",
+      "p1": [
+        50.0,
+        76.4243
+      ],
+      "p2": [
+        50.0,
+        80.0
+      ]
+    },
+    {
+      "id": "e3",
+      "type": "line",
+      "p1": [
+        50.0,
+        80.0
+      ],
+      "p2": [
+        60.0,
+        80.0
+      ]
+    },
+    {
+      "id": "e4",
+      "type": "line",
+      "p1": [
+        60.0,
+        80.0
+      ],
+      "p2": [
+        60.0,
+        76.4243
+      ]
+    },
+    {
+      "id": "e5",
+      "type": "arc",
+      "center": [
+        55.0,
+        55.0
+      ],
+      "radius": 22.0,
+      "start_deg": 103.1366,
+      "end_deg": 76.8634
+    }
+  ],
+  "relations": [
+    {
+      "kind": "coincident",
+      "refs": [
+        "e2",
+        "e3"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "coincident",
+      "refs": [
+        "e3",
+        "e4"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "coincident",
+      "refs": [
+        "e4",
+        "e5"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "coincident",
+      "refs": [
+        "e5",
+        "e2"
+      ],
+      "value_mm": null
+    },
+    {
+      "kind": "radius",
+      "refs": [
+        "e1"
+      ],
+      "value_mm": 55.0
+    },
+    {
+      "kind": "radius",
+      "refs": [
+        "e5"
+      ],
+      "value_mm": 22.0
+    }
+  ],
+  "annotations": [
+    {
+      "text": "HUB WITH KEYWAY CUTOUT 10x3",
+      "position": [
+        10.0,
+        125.0
+      ],
+      "height": 3.0,
+      "rotation_deg": 0.0
+    }
+  ],
+  "assumptions": [
+    "Origin (0.0, 0.0) is fixed at the base starting point; all coordinates are referenced from this origin.",
+    "Shape category: keyway_cutout."
+  ],
+  "unreadable": []
+}

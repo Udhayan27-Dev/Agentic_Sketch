@@ -1,0 +1,55 @@
+[
+  {
+    "cmd": "circle",
+    "params": {
+      "center": [
+        50.0,
+        50.0
+      ],
+      "radius": 50.0
+    }
+  },
+  {
+    "cmd": "circle",
+    "params": {
+      "center": [
+        50.0,
+        50.0
+      ],
+      "radius": 18.0
+    }
+  },
+  {
+    "cmd": "circle",
+    "params": {
+      "center": [
+        100.0,
+        50.0
+      ],
+      "radius": 10.0
+    }
+  },
+  {
+    "cmd": "circle",
+    "params": {
+      "center": [
+        0.0,
+        50.00000000000001
+      ],
+      "radius": 10.0
+    }
+  },
+  {
+    "cmd": "dimradius",
+    "params": {
+      "center": [
+        50.0,
+        50.0
+      ],
+      "point": [
+        100.0,
+        50.0
+      ]
+    }
+  }
+]
