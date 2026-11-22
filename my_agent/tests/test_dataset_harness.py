@@ -137,3 +137,48 @@ def test_plug_gauge_image_to_cad_harness():
         assert result.evaluation.accuracy_score >= 98.0
         assert result.evaluation.is_watertight is True
         assert os.path.exists(out_dxf)
+
+
+def test_cadcraft_expert_qa_dataset():
+    """Validates the 47 CADCraft expert QA fine-tuning and in-context dataset."""
+    expert_path = "training/data/cadcraft_expert_qa.jsonl"
+    assert os.path.exists(expert_path), f"Expert dataset missing at {expert_path}"
+
+    with open(expert_path, "r") as f:
+        records = [json.loads(line) for line in f if line.strip()]
+
+    assert len(records) == 47, f"Expected 47 records, got {len(records)}"
+
+    required_categories = {
+        "circle_cutting",
+        "distorted_image_reconstruction",
+        "fillets_chamfers",
+        "joints_constraints",
+        "mcp_protocol_setup",
+        "primitives_coordinates",
+        "transformations_annotations",
+    }
+    found_categories = set()
+
+    for idx, rec in enumerate(records):
+        assert "messages" in rec, f"Record {idx} missing 'messages'"
+        msgs = rec["messages"]
+        assert len(msgs) >= 2, f"Record {idx} has fewer than 2 messages"
+        asst_msg = next((m["content"] for m in msgs if m["role"] == "assistant"), None)
+        assert asst_msg is not None, f"Record {idx} missing assistant message"
+
+        asst_json = json.loads(asst_msg)
+        for key in ["category", "cadcraft_commands", "mcp_tool_calls", "technical_rules", "verification_checks"]:
+            assert key in asst_json, f"Record {idx} assistant JSON missing required key: {key}"
+        found_categories.add(asst_json["category"])
+
+    assert required_categories == found_categories, f"Category mismatch: {found_categories}"
+
+    # Verify converted SFT formats
+    for sft_file in ["cadcraft_expert_qwen_sft.jsonl", "cadcraft_expert_openai_sft.jsonl", "cadcraft_expert_gemini_sft.jsonl"]:
+        sft_path = os.path.join("training/data", sft_file)
+        assert os.path.exists(sft_path), f"SFT file {sft_path} does not exist"
+        with open(sft_path, "r") as f:
+            lines = [l for l in f if l.strip()]
+        assert len(lines) == 47, f"Expected 47 lines in {sft_file}, got {len(lines)}"
+

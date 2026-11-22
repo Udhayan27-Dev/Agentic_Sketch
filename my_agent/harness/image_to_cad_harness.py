@@ -74,9 +74,9 @@ class ImageCADHarness:
 
     def query_primary_llm(self, prompt: str, system_prompt: str = "You are a CAD precision engineer.") -> Optional[str]:
         """Queries the active primary LLM (Qwen 3.8 27B) via the OpenAI-compatible endpoint."""
-        api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE") or "http://127.0.0.1:7030/v1"
+        api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE") or "http://127.0.0.1:8100/v1"
         api_key = os.getenv("OPENAI_API_KEY") or "EMPTY"
-        model = os.getenv("SKETCHCAD_MODEL", "qwen3.8-27b").replace("openai/", "")
+        model = os.getenv("SKETCHCAD_MODEL", "qwen3.8-flash-next").replace("openai/", "")
         url = f"{api_base.rstrip('/')}/chat/completions"
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         payload = {
@@ -87,6 +87,8 @@ class ImageCADHarness:
             ],
             "stream": False,
         }
+        if "qwen" in model.lower():
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=45)
             if resp.status_code == 200:
@@ -245,7 +247,7 @@ class ImageCADHarness:
         print(f"[PERCEPTION] Overall Length: {parsed.total_length} mm")
 
         if use_llm:
-            model_name = os.getenv("SKETCHCAD_MODEL", "qwen3.8-27b")
+            model_name = os.getenv("SKETCHCAD_MODEL", "qwen3.8-flash-next")
             print(f"[PRIMARY LLM] Querying {model_name} for engineering verification...")
             llm_review = self.query_primary_llm(
                 f"Verify engineering dimensions for {parsed.description}: GO section L=25 dia=9.985, Handle L=20 dia=8.0, NO GO section L=20 dia=10.015, Total L=65. Confirm manufacturing tolerances."

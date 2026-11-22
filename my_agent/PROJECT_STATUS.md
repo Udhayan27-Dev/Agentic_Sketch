@@ -12,15 +12,15 @@
 
 ```mermaid
 flowchart LR
-    Img["Drawing Image"] --> Analyst["Analyst Agent<br/>(DrawingSpec Extraction)"]
-    Analyst --> Draftsman["Draftsman Agent<br/>(CAD Generation)"]
+    Img["Technical Drawing Image"] --> Analyst["Perception Agent (Analyst)<br/>Technical CAD Prompt Architect<br/>- (0,0) Origin Anchoring<br/>- 5-Part Functional Breakdown<br/>- Sharp Edges Before Fillets<br/>- Circle Cuts & Watertight Joints"]
+    Analyst -->|"cad_description<br/>(Technical Prompt Directive)"| Draftsman["Draftsman Agent<br/>MCP Server Tool Executor<br/>(new_drawing, execute, line, arc,<br/>fillet_two_lines, dimlinear, text)"]
     Draftsman --> Loop{"Refinement Loop<br/>(Max 4 Iterations)"}
     subgraph Refinement["Self-Correction Loop"]
-        Loop --> Critic["Visual Critic<br/>(Audits & Scores Geometry)"]
+        Loop --> Critic["Visual Critic<br/>(Audits Geometry & Dimensions)"]
         Critic -->|Score < 98%| Refiner["CAD Refiner<br/>(Executes Corrections)"]
         Refiner --> Loop
     end
-    Critic -->|Score >= 98%| Output["Final Output<br/>(OUT.dxf / OUT.png / GUI Preview)"]
+    Critic -->|Score >= 98%| Output["Final Output<br/>(OUT.dxf / OUT.png / CADCraft GUI)"]
 ```
 
 ---
@@ -29,34 +29,35 @@ flowchart LR
 
 | Provider / Model | Status | Notes |
 | :--- | :--- | :--- |
-| **Qwen 3.8 27B 8-bit Quantized (OpenAI-compatible)** | **ACTIVE (Dedicated Primary)** | Connected via SSH port forwarding to DGX at `http://127.0.0.1:7030/v1`. All legacy/fallback models removed. |
+| **Qwen 3.8 Flash Next (OpenAI-compatible)** | **ACTIVE (Dedicated Primary)** | Connected via SSH port forwarding to DGX at `http://127.0.0.1:8100/v1`. Model served: `qwen3.8-flash-next`. |
 
 ### Current Active `.env` Configuration
 ```env
-# Primary LLM Configuration: Qwen3.8 27B on DGX via SSH Port Forwarding
-SKETCHCAD_MODEL=openai/qwen3.8-27b
-OPENAI_BASE_URL=http://127.0.0.1:7030/v1
-OPENAI_API_BASE=http://127.0.0.1:7030/v1
+# Primary LLM Configuration: Qwen 3.8 on DGX via SSH Port Forwarding
+SKETCHCAD_MODEL=openai/qwen3.8-flash-next
+OPENAI_BASE_URL=http://127.0.0.1:8100/v1
+OPENAI_API_BASE=http://127.0.0.1:8100/v1
 OPENAI_API_KEY=EMPTY
 
 # CAD Backend configuration
 CAD_BACKEND=cadcraft
 SKETCHCAD_PACE_SECONDS=0.0
-SKETCHCAD_MULTIMODAL=0
+SKETCHCAD_MULTIMODAL=1
 ```
 
 ---
 
 ## 3. CAD Backends & Tooling
 
-1. **CADCraft (Default Backend — `CAD_BACKEND=cadcraft`)**:
+1. **CADCraft (`CAD_BACKEND=cadcraft` — ACTIVE)**:
    - Uses `cadcraft-cli mcp` via standard I/O MCP toolset.
    - Real-time desktop GUI inspection using `open_in_cadcraft_gui("OUT.dxf")`.
    - Native support for vector fonts, text annotations, and dimensional constraints (`dimlinear`, `dimradius`, `dimaligned`).
 
 2. **FreeCAD Robust MCP Bridge (`CAD_BACKEND=freecad`)**:
-   - Connects via XML-RPC socket bridge on `localhost:9875`.
-   - Executes persistent sketch commands, constraint solvers, and headless screenshot rendering.
+   - Connects via XML-RPC bridge on `localhost:9875`.
+   - Executes live sketch commands, constraints, and screenshot capture.
+   - Desktop GUI inspection using `open_in_cadcraft_gui("OUT.dxf")`.
 
 ---
 
@@ -135,16 +136,59 @@ To resolve the 15-minute execution bottleneck and optimize the fixed production 
 
 5. **Automated Test Suite**:
    - Added comprehensive optimization tests in `tests/test_agent_optimizations.py`.
-   - All **38 unit tests** in the test suite pass cleanly (`pytest tests/`).
+   - All **41 unit & integration tests** in the test suite pass cleanly (`pytest tests/`).
 
 ---
 
-## 8. Next Steps & Recommendations
+## 9. CADCraft Expert Knowledge Dataset & Model Integration
+
+**Dataset Source:** 47 curated engineering interaction samples covering advanced CADCraft 2D drafting principles.
+
+### Key Knowledge Categories (47 Samples):
+1. **MCP Protocol Setup & Safe Recovery (7 samples):**
+   - Session init with `new_drawing(metric=True)`.
+   - Tool dispatch (`execute` for structured JSON params, `command_line` for interactive sequences, `script` for batch scripts).
+   - Recovery contract for `state: "may-have-run"` timeout responses using `inspect_drawing` and `query_entities` before retrying to prevent duplicate geometry.
+   - Dual geometric and visual verification (`render` with `plot_style="monochrome.ctb"`).
+2. **Primitives & Coordinates (7 samples):**
+   - Absolute `X,Y`, relative `@dX,dY`, polar `@dist<angle`.
+   - `PLINE` arc mode (`A`, `R`, `D`, `W`), built-in fillets/chamfers in `rectang`, polygon construction.
+3. **Circle Cutting & Watertight Joints (10 samples):**
+   - D-shaft flats, keyway slots, semicircular bites, pie-wedge cuts, and C-clip radial split gaps.
+   - CADCraft counter-clockwise convention for `BREAK` and kept arc calculations.
+   - Negative voids: Enclosed circular entities inside plates form negative holes automatically without trimming.
+4. **Fillets & Chamfers (4 samples):**
+   - Construct sharp nominal edges first, then apply `fillet_two_lines` to obtain exact tangent contact points and curve arcs.
+   - Universal intersection solver: `FILLET R 0` trims or extends lines to a zero-gap corner.
+5. **Joints & Constraints (4 samples):**
+   - Watertight contours with `close_joint` and `JOIN`.
+   - Deduplication with `OVERKILL`.
+   - Geometric constraints (`AUTOCONSTRAIN`, `GCFIX`, `GCTANGENT`, `GCCOINCIDENT`) and parametric expressions.
+6. **Transformations & Annotations (5 samples):**
+   - `OFFSET`, `MIRROR`, `ARRAYRECT`, `ARRAYPOLAR` (PCD bolt hole rings).
+   - Standard mechanical layers (`CONTOUR`, `HIDDEN`, `CENTER`, `DIM`).
+7. **Distorted & Skewed Image Reconstruction (10 samples):**
+   - Regularizing phone camera photos / hand-drawn sketches with perspective distortion.
+   - Discards raw skewed pixel measurements; extracts nominal OCR dimensions.
+   - Anchors primary datum strictly at `(0.0, 0.0)` and snaps lines to canonical orthogonal axes.
+
+### Data Artifacts Generated:
+- `training/data/cadcraft_expert_qa.jsonl` (47 expert QA records)
+- `training/data/cadcraft_expert_qwen_sft.jsonl` (Qwen conversational format)
+- `training/data/cadcraft_expert_openai_sft.jsonl` (OpenAI messages format)
+- `training/data/cadcraft_expert_gemini_sft.jsonl` (Gemini SFT format)
+- `sketchcad_agent/cadcraft_examples.py` (Exemplars 0 through 11 active in-context)
+- `sketchcad_agent/agent.py` (`ANALYST_PROMPT` and `DRAFTSMAN_CADCRAFT_PROMPT` prompt architectures)
+
+---
+
+## 10. Next Steps & Recommendations
 
 1. **Continuous Benchmarking**:
    - Run `python harness/image_to_cad_harness.py --image harness/plug_gauge_harness.png --out harness/plug_gauge_harness.dxf` to benchmark end-to-end geometric accuracy.
 2. **LoRA Fine-Tuning on GPU**:
-   - Execute `python training/train_lora.py --format qwen` on the GPU instance to fine-tune specialized geometry weights.
+   - Execute `python training/train_lora.py --dataset_file ./training/data/cadcraft_expert_qwen_sft.jsonl` to generate LoRA checkpoints for Qwen.
 3. **Web UI Verification**:
    - Access the live application at **`http://127.0.0.1:7020`** to run new drawing inferences directly in the browser.
+
 

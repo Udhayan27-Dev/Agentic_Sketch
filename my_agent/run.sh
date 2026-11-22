@@ -55,21 +55,35 @@ elif [ "$CAD_BACKEND" = "freecad" ]; then
 
     # Check bridge connectivity using python socket connection
     if ! python3 -c "import socket; s = socket.create_connection(('${BRIDGE_HOST}', ${BRIDGE_PORT}), timeout=2); s.close()" 2>/dev/null; then
-        echo ""
-        echo "========================================================================="
-        echo "❌ ERROR: FreeCAD Robust MCP Bridge is NOT running on ${BRIDGE_HOST}:${BRIDGE_PORT}."
-        echo "========================================================================="
-        echo "The draftsman agent requires the FreeCAD XML-RPC bridge to execute CAD tools."
-        echo ""
-        echo "How to start the FreeCAD bridge:"
-        echo "  1. Launch FreeCAD with GUI on your desktop."
-        echo "  2. In the workbench dropdown, select 'Robust MCP Bridge'."
-        echo "  3. Click 'Start MCP Bridge' on the toolbar (or menu)."
-        echo "  4. Confirm it reports listening on localhost:${BRIDGE_PORT}."
-        echo "  5. Re-run ./run.sh."
-        echo "========================================================================="
-        echo ""
-        exit 1
+        echo "FreeCAD bridge is not currently running. Launching FreeCAD GUI automatically..."
+        setsid freecad </dev/null >/tmp/freecad.log 2>&1 &
+
+        # Wait up to 10 seconds for bridge to start
+        CONNECTED=0
+        for i in {1..10}; do
+            sleep 1
+            if python3 -c "import socket; s = socket.create_connection(('${BRIDGE_HOST}', ${BRIDGE_PORT}), timeout=1); s.close()" 2>/dev/null; then
+                CONNECTED=1
+                break
+            fi
+            echo "Waiting for FreeCAD bridge to initialize... (${i}s)"
+        done
+
+        if [ "$CONNECTED" -eq 0 ]; then
+            echo ""
+            echo "========================================================================="
+            echo "❌ ERROR: FreeCAD Robust MCP Bridge did not start on ${BRIDGE_HOST}:${BRIDGE_PORT}."
+            echo "========================================================================="
+            echo "How to start the FreeCAD bridge manually:"
+            echo "  1. Launch FreeCAD with GUI on your desktop."
+            echo "  2. In the workbench dropdown, select 'Robust MCP Bridge'."
+            echo "  3. Click 'Start MCP Bridge' on the toolbar (or menu)."
+            echo "  4. Confirm it reports listening on localhost:${BRIDGE_PORT}."
+            echo "  5. Re-run ./run.sh."
+            echo "========================================================================="
+            echo ""
+            exit 1
+        fi
     fi
 
     echo "✅ FreeCAD Robust MCP Bridge is running on ${BRIDGE_HOST}:${BRIDGE_PORT}."

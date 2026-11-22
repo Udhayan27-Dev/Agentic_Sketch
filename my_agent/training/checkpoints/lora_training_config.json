@@ -27,14 +27,14 @@
     "lr_scheduler_type": "cosine",
     "logging_steps": 5,
     "save_strategy": "epoch",
-    "evaluation_strategy": "epoch",
+    "evaluation_strategy": "no",
     "fp16": true,
     "report_to": "none"
   },
   "dataset_stats": {
-    "data_path": "./training/data/train_qwen.jsonl",
-    "total_samples": 15,
-    "avg_sample_length_chars": 6120.0,
-    "estimated_tokens_per_sample": 1610
+    "data_path": "./training/data/cadcraft_expert_qwen_sft.jsonl",
+    "total_samples": 47,
+    "avg_sample_length_chars": 1850.1,
+    "estimated_tokens_per_sample": 486
   }
 }

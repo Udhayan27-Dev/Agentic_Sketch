@@ -130,3 +130,46 @@ def test_drawing_spec_with_annotations():
     assert spec.annotations[0].text == "R30"
     assert spec.annotations[1].rotation_deg == 20.0
 
+
+def test_drawing_spec_with_parts_decomposition():
+    from sketchcad_agent.agent import PartComponent
+
+    spec = DrawingSpec(
+        units="mm",
+        entities=[
+            Entity(id="e1", type="line", p1=[0, 0], p2=[100, 0]),
+            Entity(id="e2", type="arc", center=[100, 15], radius=15.0, start_deg=270.0, end_deg=360.0),
+        ],
+        relations=[
+            Relation(kind="fillet", refs=["e1", "e2"], value_mm=15.0)
+        ],
+        parts=[
+            PartComponent(
+                id="part_1",
+                name="Nominal Sharp Envelope",
+                type="base_envelope",
+                description="Sharp rectangular contour anchored at origin",
+                sharp_vertices=[[0.0, 0.0], [100.0, 0.0], [100.0, 60.0]],
+                target_entity_ids=["e1"]
+            ),
+            PartComponent(
+                id="part_2",
+                name="Corner Fillet Rounds",
+                type="fillet_round",
+                description="Bottom-right corner fillet R=15 mm",
+                sharp_vertices=[[100.0, 0.0]],
+                target_entity_ids=["e2"]
+            )
+        ],
+        assumptions=["Origin (0,0) fixed at bottom-left corner"],
+        unreadable=[]
+    )
+    assert len(spec.parts) == 2
+    assert spec.parts[0].type == "base_envelope"
+    assert spec.parts[1].sharp_vertices == [[100.0, 0.0]]
+    # Round-trip JSON validation
+    round_trip = DrawingSpec.model_validate_json(spec.model_dump_json())
+    assert len(round_trip.parts) == 2
+    assert round_trip.parts[0].name == "Nominal Sharp Envelope"
+
+

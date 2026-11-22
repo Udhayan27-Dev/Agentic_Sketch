@@ -20,9 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 SYSTEM_PROMPT = """You are SketchCAD Draftsman, an expert AI CAD engineer.
 Given a 2D technical drawing image:
-1. Transcribe the geometry into a structured DrawingSpec with exact coordinates in millimeters referenced from origin (0.0, 0.0).
-2. For rounded corners and tangent blends, use exact geometric calculations for arcs and tangent lines.
-3. Generate the executable CADCraft commands to build the exact watertight 2D model with dimensions and annotations."""
+1. Decompose the drawing into distinct functional parts (base envelope, circular features/bores, cuts/joints, fillets, annotations).
+2. Anchor strictly at origin (0.0, 0.0) - calculate all coordinates, centers, and dimensions relative to (0.0, 0.0).
+3. For rounded corners and fillets: construct nominal sharp edges first, then apply fillet tools to solve exact tangent points and curve arcs.
+4. For circle cuts and notches: compute exact circle-line intersection points and sweep kept arcs to form watertight closed joints.
+5. Generate the executable CADCraft commands to build the exact watertight 2D model with dimensions and annotations."""
 
 
 def encode_image_base64(image_path: str) -> str:
@@ -134,15 +136,76 @@ def build_training_sets(dataset_dir: str, output_dir: str, format_type: str = "o
         print(f"    Done: {out_file} ({os.path.getsize(out_file)} bytes)")
 
 
+def convert_expert_dataset(expert_jsonl: str, output_dir: str):
+    """Converts cadcraft_expert_qa.jsonl into Qwen, OpenAI, and Gemini SFT formats."""
+    if not os.path.exists(expert_jsonl):
+        print(f"[WARN] Expert dataset not found at {expert_jsonl}")
+        return
+
+    os.makedirs(output_dir, exist_ok=True)
+    qwen_out = os.path.join(output_dir, "cadcraft_expert_qwen_sft.jsonl")
+    openai_out = os.path.join(output_dir, "cadcraft_expert_openai_sft.jsonl")
+    gemini_out = os.path.join(output_dir, "cadcraft_expert_gemini_sft.jsonl")
+
+    count = 0
+    with open(expert_jsonl, "r") as f_in, \
+         open(qwen_out, "w") as f_qwen, \
+         open(openai_out, "w") as f_openai, \
+         open(gemini_out, "w") as f_gemini:
+        for idx, line in enumerate(f_in):
+            if not line.strip():
+                continue
+            data = json.loads(line)
+            msgs = data["messages"]
+            sys_msg = next((m["content"] for m in msgs if m["role"] == "system"), "")
+            usr_msg = next((m["content"] for m in msgs if m["role"] == "user"), "")
+            ast_msg = next((m["content"] for m in msgs if m["role"] == "assistant"), "")
+
+            f_qwen.write(json.dumps({
+                "id": f"cadcraft_expert_{idx+1:03d}",
+                "conversations": [
+                    {"from": "system", "value": sys_msg},
+                    {"from": "user", "value": usr_msg},
+                    {"from": "gpt", "value": ast_msg},
+                ],
+            }) + "\n")
+
+            f_openai.write(json.dumps({
+                "messages": [
+                    {"role": "system", "content": sys_msg},
+                    {"role": "user", "content": usr_msg},
+                    {"role": "assistant", "content": ast_msg},
+                ],
+            }) + "\n")
+
+            f_gemini.write(json.dumps({
+                "systemInstruction": {"parts": [{"text": sys_msg}]},
+                "contents": [
+                    {"role": "user", "parts": [{"text": usr_msg}]},
+                    {"role": "model", "parts": [{"text": ast_msg}]},
+                ],
+            }) + "\n")
+            count += 1
+
+    print(f"[OK] Converted {count} CADCraft expert QA records into Qwen, OpenAI, and Gemini SFT formats in {output_dir}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Prepare VLM training dataset")
     parser.add_argument("--dataset_dir", type=str, default="./dataset", help="Path to generated dataset")
+    parser.add_argument("--expert_jsonl", type=str, default="./training/data/cadcraft_expert_qa.jsonl", help="Path to CADCraft expert QA jsonl")
     parser.add_argument("--output_dir", type=str, default="./training/data", help="Output directory for training files")
     parser.add_argument("--format", type=str, default="openai", choices=["openai", "qwen", "gemini"], help="Format type")
+    parser.add_argument("--process_expert_only", action="store_true", help="Only process expert QA dataset")
     args = parser.parse_args()
 
-    build_training_sets(args.dataset_dir, args.output_dir, format_type=args.format)
+    if args.expert_jsonl and os.path.exists(args.expert_jsonl):
+        convert_expert_dataset(args.expert_jsonl, args.output_dir)
+
+    if not args.process_expert_only and os.path.exists(os.path.join(args.dataset_dir, "manifest.json")):
+        build_training_sets(args.dataset_dir, args.output_dir, format_type=args.format)
 
 
 if __name__ == "__main__":
     main()
+

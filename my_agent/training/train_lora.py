@@ -65,8 +65,12 @@ def print_lora_training_recipe(model_id: str, lora_r: int, lora_alpha: int, lr: 
 
 
 def run_training_pipeline(args):
-    data_path = os.path.join(args.data_dir, f"train_{args.format}.jsonl")
-    val_path = os.path.join(args.data_dir, f"val_{args.format}.jsonl")
+    if getattr(args, "dataset_file", None):
+        data_path = args.dataset_file
+        val_path = getattr(args, "val_file", None)
+    else:
+        data_path = os.path.join(args.data_dir, f"train_{args.format}.jsonl")
+        val_path = os.path.join(args.data_dir, f"val_{args.format}.jsonl")
     stats = validate_training_data(data_path)
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -102,7 +106,7 @@ def run_training_pipeline(args):
             "lr_scheduler_type": "cosine",
             "logging_steps": 5,
             "save_strategy": "epoch",
-            "evaluation_strategy": "epoch" if os.path.exists(val_path) else "no",
+            "evaluation_strategy": "epoch" if (val_path and os.path.exists(val_path)) else "no",
             "fp16": True,
             "report_to": "none",
         },
@@ -132,6 +136,8 @@ def main():
     parser = argparse.ArgumentParser(description="LoRA Fine-tuning pipeline for CADCraft VLM")
     parser.add_argument("--model_id", type=str, default="Qwen/Qwen2.5-VL-7B-Instruct", help="Base model identifier")
     parser.add_argument("--data_dir", type=str, default="./training/data", help="Directory with prepared JSONL datasets")
+    parser.add_argument("--dataset_file", type=str, default=None, help="Explicit path to single training dataset JSONL")
+    parser.add_argument("--val_file", type=str, default=None, help="Explicit path to validation dataset JSONL")
     parser.add_argument("--format", type=str, default="qwen", choices=["qwen", "openai", "gemini"], help="Data format")
     parser.add_argument("--output_dir", type=str, default="./training/checkpoints", help="Output directory for checkpoints")
     parser.add_argument("--lora_r", type=int, default=16, help="LoRA rank")
