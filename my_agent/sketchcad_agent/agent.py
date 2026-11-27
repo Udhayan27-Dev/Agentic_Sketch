@@ -45,22 +45,42 @@ if not MODEL.startswith('openai/'):
     MODEL = f'openai/{MODEL}'
 
 CAD_BACKEND = os.getenv('CAD_BACKEND', 'cadcraft').lower()
-CADCRAFT_CLI_CMD = shutil.which('cadcraft-cli') or '/usr/bin/cadcraft-cli'
+CADCRAFT_CLI_CMD = (
+    os.getenv('CADCRAFT_CLI_PATH')
+    or ('/home/udhayan/Agent/cadcraft-main/target/debug/cadcraft-cli' if os.path.isfile('/home/udhayan/Agent/cadcraft-main/target/debug/cadcraft-cli') else None)
+    or shutil.which('cadcraft-cli')
+    or '/usr/bin/cadcraft-cli'
+)
 FREECAD_MCP_CMD = shutil.which('freecad-mcp') or str(Path(sys.executable).parent / 'freecad-mcp')
+
+OUTPUT_DIR = Path("/home/udhayan/Agent/outputs")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 _cadcraft_gui_proc = None
 
-def open_in_cadcraft_gui(file_path: str = "OUT.dxf") -> str:
+def open_in_cadcraft_gui(file_path: str = "") -> str:
     """Opens CADCraft desktop GUI application with the generated CAD file to showcase the output directly on screen.
 
     Args:
-        file_path: Relative or absolute path to the DXF or DWG file (defaults to 'OUT.dxf').
+        file_path: Path to the DXF or DWG file in /home/udhayan/Agent/outputs/ (defaults to latest generated drawing).
     """
     global _cadcraft_gui_proc
     cadcraft_gui = shutil.which('cadcraft') or '/usr/bin/cadcraft'
-    abs_path = os.path.abspath(file_path)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not file_path or file_path in ["OUT.dxf", "OUT"]:
+        dxfs = sorted(OUTPUT_DIR.glob("*.dxf"), key=os.path.getmtime, reverse=True)
+        if dxfs:
+            abs_path = str(dxfs[0])
+        else:
+            abs_path = str(OUTPUT_DIR / "drawing.dxf")
+    elif not os.path.isabs(file_path):
+        abs_path = str(OUTPUT_DIR / file_path)
+    else:
+        abs_path = os.path.abspath(file_path)
+
     if not os.path.exists(abs_path):
-        return f"Error: CAD file not found at {abs_path}. Please save the drawing first using save(path='{file_path}')."
+        return f"Error: CAD file not found at {abs_path}. Please save the drawing first using save(path='{abs_path}')."
 
     # Close previous GUI preview window if still running to cleanly refresh
     if _cadcraft_gui_proc is not None and _cadcraft_gui_proc.poll() is None:
@@ -193,94 +213,57 @@ class AnalystJsonSpec(BaseModel):
     checks: SelfChecks
     uncertain: list[str] = []
 
-ANALYST_PROMPT = """You analyze a dimensioned 2D engineering drawing (image) and output ONE JSON
-spec that a second agent will draw. You never draw and never call CAD tools.
-Your only output is the JSON (preceded by your working in the WORKING section).
+ANALYST_PROMPT = """You are an expert mechanical CAD perception engineer.
+Analyze the provided 2D engineering drawing image carefully.
+Your task is to transcribe the visual geometry into a mathematically verified CAD specification for the Draftsman agent.
 
-PROCESS (follow in order)
-1. READ: list every printed label exactly as written (e.g. "R1=0.625h",
-   "0.375h", "2.3h"), and say which feature each one points to. If the user
-   gives a value for h, substitute it. Never invent a label that is not
-   printed. If a label is hard to read, list it under "uncertain".
-2. IDENTIFY: list every entity (line, arc, circle) and which entities meet
-   at each corner. Mark each corner SHARP or ROUNDED.
-3. DATUM: put the origin on the baseline at the bottom-left of the bounding
-   box. State the bounding box from the overall dimensions.
-4. SOLVE: compute every coordinate from the dimensions with formulas, never
-   from pixels. Use the python tool for all trig and intersections. Show the
-   formula for each non-obvious point (circle-line intersections, tangent
-   points, angle conversions).
-5. SELF-CHECK before output. All must pass, otherwise fix and recheck:
-   - Outer loop is closed (each end meets the next start within 0.02 mm).
-   - Bounding box of all entities equals the overall dimensions.
-   - No coordinate lies outside the bounding box.
-   - Each circle/arc fits inside the stated height and width.
-   - Each arc's sweep equals (end - start) mod 360, and its midpoint is
-     computed and listed.
-6. FILLETS: for any corner that looks rounded:
-   - Radius is printed -> "basis": "STATED".
-   - Not printed -> add a small radius judged from the image and mark
-     "basis": "ESTIMATED". Typical size is 2% to 5% of the part height.
-7. OUTPUT the JSON below.
+GROUNDING & DATUM:
+1. Origin (0,0): bottom-left of the part bounding box. Y=0 at lowest horizontal edge, X=0 at leftmost outer contour edge. Units: mm.
+2. Read every printed dimension (Ø, R, linear) exactly. Trace BOTH extension lines to identify the exact two points each dimension measures between.
+3. Dimension to circle CENTER (e.g. "140" to hub center): the circle OUTER EDGE extends further by +radius beyond that center point.
+4. Right-wall tangency: if a hub's rightmost edge is tangent to the right vertical wall, then cx_hub = x_right_wall - R_hub.
+5. CAD angle convention: CCW from +X axis (0°=right, 90°=up, 180°=left, 270°=down).
 
-HARD RULES
-- Every arc: center, radius, start_angle, end_angle in degrees, measured
-  from +X, ALWAYS counter-clockwise (CCW). Give sweep and midpoint. Never use
-  the words clockwise or "the long way".
-- A large arc may sweep more than 180 degrees. A fillet never does.
-- Draw the sharp loop first. Fillets are listed separately and are made by
-  the add_fillet tool, never as hand-written arcs.
-- A hole or bore drawn as a full circle is "circle". A partial one is "arc".
-- No placeholders ("approx", "TBD"). Every number is final.
-- No dimension lines, arrows or text in the drawing.
-- Anything ambiguous goes in "uncertain" with the assumption you made.
-- Call python_tool AT MOST 1 or 2 times during your working. Once you output the JSON spec, your analysis is finished: NEVER make tool calls when returning the JSON output.
+PART NAME: Use snake_case (e.g. "linkage_bracket"). Never use "OUT", "cad_part", or screenshot filenames.
 
-OUTPUT FORMAT (valid JSON only after the WORKING section)
-WORKING
-[Show your step-by-step reading, identification, datum, formulas, and self-checks here]
+MANDATORY TOOL WORKFLOW — use python_tool for ALL math. Do not guess tangent points or arc centers:
+1. Verify all dimension chains with python_tool.
+2. Concave fillet between a LINE (at y=Y) and a CIRCLE (center C, radius R_circle) with blend radius R_blend:
+   - Fillet center is on the AIR side: cy_fillet = Y + R_blend (above the line), cx_fillet = cx_circle - sqrt((R_blend + R_circle)^2 - (cy_fillet - cy_circle)^2)
+   - Tangent on line: (cx_fillet, Y)
+   - Tangent on circle: circle_center + R_circle * unit_vector_toward_fillet_center
+   - Call arc_angles to get start/end degrees; verify via_point is ON the concave curve between the two tangent points.
+3. Rounded lugs / tangent from baseline to circle: call tangent_from_point_to_circle to find exact tangent points.
+4. For EVERY arc in outer_loop:
+   - Specify p_start, via_point (midpoint ON the arc, on the SHORT side between p_start and p_end), p_end.
+   - Verify: CCW sweep from start_deg to end_deg MUST be < 350°. If > 350°, via_point is on the wrong side — recompute it at the CCW midpoint angle.
 
+OUTER LOOP — trace the closed outer boundary CCW (counterclockwise):
+- Lines: {"id":"L1","type":"line","p1":[x1,y1],"p2":[x2,y2]}
+- Arcs:  {"id":"A1","type":"arc","center":[cx,cy],"radius":r,"start_deg":d1,"end_deg":d2,"p_start":[sx,sy],"via_point":[mx,my],"p_end":[ex,ey]}
+
+INNER FEATURES — all circular bores/bosses AND internal lines:
+- Circle: {"id":"C1","type":"circle","center":[cx,cy],"radius":r,"style":"solid"}
+- Line: {"id":"L2","type":"line","p1":[x1,y1],"p2":[x2,y2],"style":"solid"} or "dashed"
+
+Call python_tool first, then output ONLY valid JSON:
+
+```json
 {
+  "part_name": "<snake_case_name>",
   "units": "mm",
-  "h": <number>,
-  "origin": "baseline, bottom-left of bounding box",
-  "bbox": {"xmin":..,"xmax":..,"ymin":..,"ymax":..},
-  "stated_labels": ["..."],
-  "outer_loop": [                       // in drawing order, one closed loop
-    {"id":"L1","type":"line","p1":[x,y],"p2":[x,y]},
-    {"id":"A1","type":"arc","center":[x,y],"radius":r,
-     "start_angle":deg,"end_angle":deg,"sweep":deg,"midpoint":[x,y],
-     "p_start":[x,y],"p_end":[x,y]}
+  "description": "<brief description>",
+  "bbox": {"xmin": 0.0, "ymin": 0.0, "xmax": <width>, "ymax": <height>},
+  "outer_loop": [
+    {"id": "L1", "type": "line", "p1": [0.0, 0.0], "p2": [<x>, 0.0]}
   ],
   "inner_features": [
-    {"id":"C1","type":"circle","center":[x,y],"radius":r}
+    {"id": "C1", "type": "circle", "center": [<cx>, <cy>], "radius": <r>, "style": "solid"}
   ],
-  "fillets": [
-    {"corner":[x,y],"between":["L3","L4"],"radius":r,
-     "basis":"STATED|ESTIMATED","expected_sweep":deg}
-  ],
-  "checks": {"loop_closed":true,"bbox_ok":true,"arcs_ok":true},
-  "uncertain": ["..."]
+  "dimensions": ["..."],
+  "checks": {"loop_closed": true, "bbox_ok": true}
 }
-
-EXAMPLE (seal profile, h=12)
-{
- "units":"mm","h":12,
- "bbox":{"xmin":0,"xmax":27.6,"ymin":0,"ymax":12},
- "outer_loop":[
-  {"id":"L1","type":"line","p1":[1.5,0],"p2":[27.6,0]},
-  {"id":"L2","type":"line","p1":[27.6,0],"p2":[24.0,3.0]},
-  {"id":"L3","type":"line","p1":[24.0,3.0],"p2":[24.0,1.2]},
-  {"id":"L4","type":"line","p1":[24.0,1.2],"p2":[1.5,1.2]},
-  {"id":"L5","type":"line","p1":[1.5,1.2],"p2":[1.5,0]}
- ],
- "inner_features":[],
- "fillets":[
-  {"corner":[24.0,3.0],"between":["L2","L3"],"radius":0.5,"basis":"ESTIMATED","expected_sweep":90.0}
- ],
- "checks":{"loop_closed":true,"bbox_ok":true,"arcs_ok":true},
- "uncertain":[]
-}
+```
 """
 
 DRAFTSMAN_PROMPT = """You are the expert CAD Draftsman. You receive the Technical CAD Drafting Directive from the Perception Agent.
@@ -393,101 +376,93 @@ Procedure:
 4. Summarize what was added/fixed so the Critic can re-evaluate on the next iteration of the loop.
 Rules: never invent tool names. Follow the Critic's rectification commands strictly."""
 
-DRAFTSMAN_CADCRAFT_PROMPT = """You draw a 2D profile in the CAD app using the MCP tools. You receive ONE
-JSON spec from the analyst. Draw exactly what it says. Do not redesign,
-re-estimate or "improve" any number. You do not look at the original image
-for coordinates; the JSON is the only source of geometry.
+DRAFTSMAN_CADCRAFT_PROMPT = """You draw 2D engineering profiles directly in CADCraft using MCP tools and mathematical geometry helpers.
+You receive a structured specification from the Analyst, and you also see the user's ORIGINAL drawing image in the conversation.
+All coordinates are in millimeters anchored from origin datum (0.0, 0.0).
 
 SPECIFICATION FROM ANALYST:
 {drawing_spec}
 
-TOOLS
-new_drawing(metric=True), execute(command=line|arc|circle, ...),
-add_fillet(entity1, entity2, radius), read_entity(id), delete_entity(id),
-save(path), render(fit=True, path).
+OUTPUT DIRECTORY & DYNAMIC NAMING:
+- Dedicated Folder: All CAD files and rendered images MUST be saved in `/home/udhayan/Agent/outputs/`.
+- File Naming: Use `{part_name}` (e.g. "mounting_bracket", "linkage_bracket"):
+  * DXF path: `/home/udhayan/Agent/outputs/{part_name}.dxf`
+  * Rendered preview: `/home/udhayan/Agent/outputs/{part_name}_rendered.png`
+- NEVER save as generic `OUT.dxf` and NEVER use raw screenshot filenames!
 
-PROCEDURE
-Step 1. Call new_drawing(metric=True).
+CADCRAFT COMMAND REFERENCE:
+- Create drawing: new_drawing(metric=True)
+- Load linetypes (for hidden/center lines): execute(command="linetype", params={"load": "*"})
+- Create layer: execute(command="layer.new", params={"name": "VISIBLE", "color": "white", "current": True})
+  * For dashed hidden lines: execute(command="layer.new", params={"name": "HIDDEN", "color": "cyan", "linetype": "DASHED", "current": True})
+  * For centerlines: execute(command="layer.new", params={"name": "CENTER", "color": "red", "linetype": "CENTER", "current": True})
+- Draw straight line(s): execute(command="line", params={"points": [[x1, y1], [x2, y2], ...]})
+- Draw closed polyline: execute(command="pline", params={"vertices": [[x1, y1], ...], "closed": True})
+- Draw unambiguous 3-point arc (PREFERRED whenever p_start, via_point, p_end are known):
+  execute(command="arc", params={"p1": [sx, sy], "p2": [mx, my], "p3": [ex, ey]})
+- Draw center-radius CCW arc (ONLY when start/end angles were verified via `arc_angles`):
+  execute(command="arc", params={"center": [cx, cy], "radius": r, "start": deg1, "end": deg2})
+- Draw circular bore/boss: execute(command="circle", params={"center": [cx, cy], "radius": r})
+- Apply fillet (works on lines, arcs, and circles): add_fillet(entity1="handle1", entity2="handle2", radius=r)
+- Add dimensions (on DIMENSIONS layer):
+  * execute(command="dimlinear", params={"p1": [x1, y1], "p2": [x2, y2], "at": [ax, ay]})
+  * execute(command="dimradius", params={"center": [cx, cy], "point": [px, py]})
+  * execute(command="dimdiameter", params={"center": [cx, cy], "point": [px, py]})
+- Save drawing: save(path="/home/udhayan/Agent/outputs/{part_name}.dxf")
+- Render image preview: render(fit=True, path="/home/udhayan/Agent/outputs/{part_name}_rendered.png")
+- Open live GUI showcase: open_in_cadcraft_gui(file_path="/home/udhayan/Agent/outputs/{part_name}.dxf")
 
-Step 2. Draw "outer_loop" entities ONE AT A TIME, in the listed order.
-  - line: execute(command="line", p1=..., p2=...)
-  - arc:  execute(command="arc", center=..., radius=...,
-          start_angle=..., end_angle=...)   (CCW from start to end)
-  After EACH entity call read_entity and compare with the JSON:
-    - endpoints within 0.02 mm, radius within 0.02 mm, angles within 0.2 deg;
-    - for arcs also compare the sweep and the midpoint.
-  If any value differs, delete_entity and redraw that entity. Do not continue
-  until it matches. Never retry more than 3 times; then stop and report.
-
-Step 3. Draw "inner_features". A "circle" is a full circle. Do not draw an arc
-  for a circle or a circle for an arc.
-
-Step 4. VERIFY the sharp loop before any fillet:
-  - each entity's end touches the next entity's start (gap under 0.02);
-  - overall bounding box matches "bbox" within 0.05 mm;
-  - render a preview and confirm that a large arc (sweep over 180 deg)
-    covers the correct side.
-  If anything fails, fix it before Step 5.
-
-Step 5. FILLETS, one at a time, in the listed order.
-  - Use add_fillet only. Never hand-draw a fillet arc.
-  - After each fillet, read back the new arc:
-      a) its sweep must be LESS than 180 deg and within 5 deg of
-         "expected_sweep". Over 180 means it is the complement arc:
-         undo it, and redo with start and end swapped.
-      b) it must be tangent to both neighbours (no gap, no hook, no curl).
-      c) the outer loop must still be closed.
-  - If a fillet fails because the radius is too large for a neighbouring
-    segment, halve the radius once and retry. If it still fails, skip it
-    and report it. Do not fillet any other corner.
-
-Step 6. save(path="OUT.dxf"); render(fit=True, path="OUT.png").
-
-FINAL REPORT (always return this, short)
-  - entities drawn and fillets applied (ok / skipped / radius changed);
-  - any check that failed or any value you had to change;
-  - the "uncertain" and ESTIMATED items from the JSON, repeated as-is.
-
-HARD RULES
-- Arcs are always counter-clockwise from start_angle to end_angle.
-- Never invent or adjust a coordinate. If something looks wrong, report it.
-- No dimension lines, arrows or text in the drawing.
-- One tool call at a time; read back before moving on.
-- If a tool call errors, report the exact error. Do not work around it
-  silently with a different shape.
+GEOMETRIC SANITY & PROCEDURE:
+1. Initialize: Call new_drawing(metric=True), load linetypes `linetype(load="*")`, and create layer `VISIBLE` (`white`, `current=True`).
+2. Verify Before Drawing: Check every arc and tangent transition against the original drawing image!
+   - If an arc in the spec is a concave blend (like R89) whose center lies inside the solid body instead of outside on the air side, RECALCULATE it right now using `tangent_arc_line_circle` + `arc_angles`!
+   - Prefer 3-point `arc(p1=p_start, p2=via_point, p3=p_end)` so concave curves NEVER flip upside-down into domes.
+3. Draw Outer Boundary on `VISIBLE`: Ensure sequential lines and arcs form a closed watertight perimeter with zero gaps.
+4. Draw Concentric Bores, Bosses & Internal Solid Ribs on `VISIBLE`: Draw ALL concentric circles (e.g., both outer hub ring AND inner bore) and solid rib lines.
+5. Draw Hidden / Dashed Features on `HIDDEN` (`linetype="DASHED"`): Draw internal hidden walls and dashed slots.
+6. Apply Small Fillets & Add Centerlines (`CENTER` layer) + Key Dimensions (`DIMENSIONS` layer).
+7. Save, Render & Showcase:
+   Call save(path="/home/udhayan/Agent/outputs/{part_name}.dxf"),
+   render(fit=True, path="/home/udhayan/Agent/outputs/{part_name}_rendered.png"),
+   and open_in_cadcraft_gui(file_path="/home/udhayan/Agent/outputs/{part_name}.dxf").
+8. Conclude with a concise summary listing `/home/udhayan/Agent/outputs/{part_name}.dxf`.
 """
 
-CRITIC_CADCRAFT_PROMPT = """You are the Visual Critic / Inspector of the CAD pipeline.
-Compare the current CADCraft 2D drawing screenshot directly against the ORIGINAL TECHNICAL DRAWING IMAGE uploaded by the user and Technical CAD Directive:
+CRITIC_CADCRAFT_PROMPT = """You are the strict Visual Critic & Geometric Auditor of the CAD pipeline.
+You MUST visually inspect the rendered CADCraft drawing side-by-side against the ORIGINAL TECHNICAL DRAWING IMAGE uploaded by the user and specification:
 {cad_description}
 (Fallback Reference: {drawing_spec})
 
-Your Goal: Strictly inspect the visual geometry, dimensions, text annotations, and origin grounding in CADCraft against the user's drawing image and specification. Target accuracy is 98% and above.
+CRITICAL STEP 1 (MANDATORY BEFORE SCORING):
+You DO NOT yet see the current CADCraft drawing until you call `render(...)`!
+On your FIRST turn of each Critic iteration, ONLY call tools:
+- `render(fit=True, path="/home/udhayan/Agent/outputs/{part_name}_rendered.png")`
+- `inspect_drawing(entities=False)`
+Do NOT output your final JSON score or call `exit_loop` until AFTER `render` returns the rendered PNG image to you!
 
-Procedure:
-1. Inspect the CADCraft drawing: call render(fit=True, path="OUT.png") to inspect the visual rendering.
-2. Conduct a strict geometric audit across mandatory checks:
-   - Check 0 (Origin Grounding): Drawing MUST start at origin (0.0, 0.0) with all coordinates referenced from (0.0, 0.0).
-   - Check A (Outline & Features): All lines, arcs, circles, cutouts, and fillets specified in the drawing must be completely drawn.
-   - Check B (Contour Closure & Watertightness): Outer and inner contours must close seamlessly with zero endpoint gaps.
-   - Check C (Tangency & Blends): Line-arc and arc-arc transitions must be smooth and tangent where specified.
-   - Check D (Dimensions & Tolerances): Verified dimensions must match the numerical values from the technical drawing.
-   - Check E (Annotations & Notes): Required callouts, labels, and text annotations must be present and legible.
-3. Scoring Rules:
-   - If contours are open, features are missing, or geometry contradicts the dimensions: ACCURACY SCORE MUST BE < 90.0%.
-   - Score >= 98.0% ONLY IF all contours are closed, all features/cutouts are present, dimensions and origin are correct, and geometry matches the specification.
-4. If accuracy_score >= 98.0:
-   - Call open_in_cadcraft_gui(file_path="OUT.dxf") to ensure the final drawing is showcased on the user's screen in CADCraft GUI!
-   - Call the exit_loop tool to complete the loop!
-   - Set is_accurate to True and summarize that the drawing meets the quality target (>= 98%).
-5. If accuracy_score < 98.0:
-   - Do NOT call exit_loop.
-   - Set is_accurate to False.
-   - In errors: detail each missing check with structured issue_type ('missing_feature', 'open_contour', 'geometry_conflict', 'dimension_mismatch', or 'invalid_state').
-   - In rectification_commands: provide exact CADCraft commands (command_line or execute) for the Refiner to execute (e.g. adding missing lines, arcs, dimensions, or text anchored to origin).
+STEP 2 (VISUAL & GEOMETRIC AUDIT AFTER SEEING THE RENDERED PNG):
+Compare `[RENDERED CADCRAFT OUTPUT IMAGE]` directly against the user's ORIGINAL drawing image:
+- Check 1 (Silhouette & Arc Curvature Direction): Do all outer curves bend in the exact same direction as the blueprint? (e.g., concave valley fillets scoop INWARD; NO upside-down convex domes arching across empty space; NO invented arcs not in the drawing; left/right lugs and sloped tangent lines connect smoothly).
+- Check 2 (Concentric Circles & Bores): Are ALL concentric circles drawn (e.g., outer hub AND inner bore, outer bosses AND inner holes)? Are proportions and vertical/horizontal alignments faithful?
+- Check 3 (Closure & Tangency): Are outer boundaries closed with zero dangling segments, overlaps, or sharp kinks at tangent joints?
+- Check 4 (Internal Ribs, Hidden Dashed Lines & Centerlines): Are internal blocks, vertical ribs, dashed hidden outlines, and centerlines present cleanly?
+- Check 5 (Dimensions & Dynamic Naming): Are key dimensions present, and is the output saved to `/home/udhayan/Agent/outputs/{part_name}.dxf` (NOT `OUT.dxf`)?
+
+SCORING RULES (BE STRICT AND HONEST):
+- If ANY arc curves the wrong way (e.g., dome instead of concave valley), a boundary is broken/open, a concentric bore/hole is missing, or extra spurious geometry exists: accuracy_score MUST BE < 75.0 (set `is_accurate: false`).
+- Score >= 95.0 (`is_accurate: true`) ONLY IF the rendered image visually matches the blueprint silhouette, arc curvatures, holes, proportions, and watertightness.
+
+ACTIONS:
+- If `accuracy_score >= 95.0` (AFTER visually inspecting the rendered PNG):
+  1. Call `open_in_cadcraft_gui(file_path="/home/udhayan/Agent/outputs/{part_name}.dxf")`.
+  2. Call `exit_loop()`.
+  3. Output final JSON: `{"accuracy_score": <score>, "is_accurate": true, "summary": "...", "errors": [], "rectification_commands": []}`.
+- If `accuracy_score < 95.0`:
+  1. Do NOT call `exit_loop`.
+  2. Set `is_accurate: false`, list each specific geometric/visual defect in `errors`, and provide clear `rectification_commands` (including `delete_entity` handles from `query_entities` or `"rebuild_clean"` when major silhouette arcs are wrong) so the Refiner can fix every single defect! Output ONLY valid JSON.
 """
 
-REFINER_CADCRAFT_PROMPT = """You are the CAD Refiner. Your job is to rectify errors reported by the Critic and update the CADCraft drawing.
+REFINER_CADCRAFT_PROMPT = """You are the CAD Refiner. Your job is to rectify every geometric and visual defect reported by the Critic.
 Critic Report:
 {critic_report}
 
@@ -495,33 +470,33 @@ Technical CAD Directive:
 {cad_description}
 (Fallback Reference: {drawing_spec})
 
-Procedure:
-1. Review the errors and rectification_commands from the Critic Report.
-2. Apply the corrections in CADCraft:
-   - Execute the Critic's rectification commands using command_line or execute to add the missing geometry (arcs, lines, circles, slots, dimensions, text) into the active drawing.
-   - Follow DeciCAD state grounding: modify the active drawing incrementally; never recreate the drawing from scratch.
-   - Maintain strict origin grounding: ensure all geometry is positioned relative to the (0.0, 0.0) origin.
-   - Ensure new geometry endpoints connect properly to form closed loops.
-3. Call save(path="OUT.dxf").
-4. Call open_in_cadcraft_gui(file_path="OUT.dxf") to update the live CADCraft GUI window on the screen.
-5. Call render(fit=True, path="OUT.png") to capture the updated drawing.
-6. Summarize what was added/fixed so the Critic can re-evaluate on the next iteration of the loop.
-Rules: never invent tool names. Follow the Critic's rectification commands strictly."""
+PROCEDURE:
+1. Review `errors` and `rectification_commands` from the Critic Report, and compare against the original drawing image.
+2. Inspect entity handles with `query_entities()` if needed.
+3. Apply accurate geometric repairs using `GEOMETRY_TOOLS` (`tangent_arc_line_circle`, `tangent_from_point_to_circle`, `arc_angles`, `fillet_two_lines`) — NEVER guess arc angles or tangent endpoints:
+   - For localized fixes (missing circles/bores, stray lines, single broken arc): delete broken entities with `delete_entity(id=...)` / `execute(command="erase", params={"handles": [...]})` and draw the mathematically verified replacements (use 3-point `arc(p1, p2, p3)` for unambiguous curvature!).
+   - If the Critic flags major silhouette inversion (multiple wrong outer arcs or disconnected base contour), cleanly reset with `new_drawing(metric=True)` and rebuild the verified profile using exact `GEOMETRY_TOOLS` coordinates, layers (`VISIBLE`, `HIDDEN`, `CENTER`, `DIMENSIONS`), and 3-point arcs!
+4. Save & Render:
+   - `save(path="/home/udhayan/Agent/outputs/{part_name}.dxf")`
+   - `render(fit=True, path="/home/udhayan/Agent/outputs/{part_name}_rendered.png")`
+   - `open_in_cadcraft_gui(file_path="/home/udhayan/Agent/outputs/{part_name}.dxf")`
+5. Summarize the exact fixes made so the Critic can visually inspect the updated render.
+"""
 
 import asyncio
 import io
 import json
 import time
 import litellm
-from PIL import Image
+from PIL import Image, ImageEnhance
 from google.adk.models.lite_llm import LiteLlm
 from google.genai import types
 from google.adk.workflow._retry_config import RetryConfig
 
-# Strict performance settings for production Qwen 3.8 27B endpoint
-litellm.request_timeout = 120.0
+# Performance settings for Qwen vLLM endpoint (accounts for Tailscale RTT)
+litellm.request_timeout = 180.0
 litellm.disable_cost_tracking = True
-os.environ['LITELLM_REQUEST_TIMEOUT'] = '120'
+os.environ['LITELLM_REQUEST_TIMEOUT'] = '180'
 os.environ['LITELLM_NUM_RETRIES'] = '0'
 os.environ['LITELLM_LOCAL_MODEL_COST_MAP'] = 'True'
 
@@ -530,25 +505,14 @@ if 'qwen' in MODEL.lower():
     extra_body['chat_template_kwargs'] = {'enable_thinking': False}
 
 class QwenLiteLlm(LiteLlm):
-    """LiteLlm wrapper for Qwen vLLM endpoints that auto-adapts tool_choice for vLLM compatibility."""
-    async def generate_content_async(self, llm_request, stream=True):
-        original_acompletion = self.llm_client.acompletion
-        async def patched_acompletion(**kwargs):
-            if kwargs.get('tool_choice') == 'auto':
-                kwargs['tool_choice'] = 'none'
-            return await original_acompletion(**kwargs)
-        self.llm_client.acompletion = patched_acompletion
-        try:
-            async for chunk in super().generate_content_async(llm_request, stream=stream):
-                yield chunk
-        finally:
-            self.llm_client.acompletion = original_acompletion
+    """LiteLlm wrapper for Qwen vLLM endpoints preserving native auto tool calling."""
+    pass
 
 active_model = QwenLiteLlm(
     model=MODEL,
     api_base=OPENAI_BASE,
     api_key=OPENAI_KEY,
-    timeout=120,
+    timeout=180,
     extra_body=extra_body if extra_body else None
 )
 
@@ -557,7 +521,6 @@ PACE_SECONDS = float(os.getenv('SKETCHCAD_PACE_SECONDS', '0.0'))
 _entity_id_map: dict[str, str] = {}
 _last_created_handle: Optional[str] = None
 _handles_history: list[str] = []
-_analyst_tool_calls: int = 0
 
 def sanitize_json_output(text: str, default_schema: Optional[type[BaseModel]] = None) -> str:
     """Extracts valid JSON payload and discards conversational greetings or preambles."""
@@ -573,10 +536,10 @@ def sanitize_json_output(text: str, default_schema: Optional[type[BaseModel]] = 
             })
         elif default_schema == CriticReport:
             return json.dumps({
-                "accuracy_score": 99.0,
-                "is_accurate": True,
-                "summary": "Drawing verified accurate.",
-                "errors": [],
+                "accuracy_score": 0.0,
+                "is_accurate": False,
+                "summary": "Critic returned empty response; visual inspection required.",
+                "errors": [{"issue_type": "invalid_state", "description": "Empty Critic response", "how_to_fix": "Call render and inspect geometry"}],
                 "rectification_commands": []
             })
         return "{}"
@@ -621,10 +584,10 @@ def sanitize_json_output(text: str, default_schema: Optional[type[BaseModel]] = 
         })
     elif default_schema == CriticReport:
         return json.dumps({
-            "accuracy_score": 99.0,
-            "is_accurate": True,
-            "summary": "Drawing verified accurate.",
-            "errors": [],
+            "accuracy_score": 0.0,
+            "is_accurate": False,
+            "summary": f"Critic failed to output valid JSON evaluation: {text[:120]}",
+            "errors": [{"issue_type": "invalid_state", "description": "Non-JSON Critic response", "how_to_fix": "Inspect rendered image and output valid CriticReport JSON"}],
             "rectification_commands": []
         })
     return text
@@ -644,6 +607,13 @@ def _normalize_execute_args(args: dict) -> dict:
         elif pts is not None:
             params['points'] = pts
     elif cmd == 'arc':
+        p1 = args.get('p1') if args.get('p1') is not None else params.get('p1')
+        p2 = args.get('p2') if args.get('p2') is not None else params.get('p2')
+        p3 = args.get('p3') if args.get('p3') is not None else params.get('p3')
+        if p1 is not None and p2 is not None and p3 is not None:
+            params['p1'] = p1
+            params['p2'] = p2
+            params['p3'] = p3
         c = args.get('center') if args.get('center') is not None else params.get('center')
         r = args.get('radius') if args.get('radius') is not None else params.get('radius')
         s = None
@@ -697,7 +667,12 @@ def _normalize_tool_call_args(fn_name: str, args: dict) -> dict:
         e1 = args.get('entity1') or args.get('h1') or (args.get('between', [None, None])[0] if isinstance(args.get('between'), list) else None)
         e2 = args.get('entity2') or args.get('h2') or (args.get('between', [None, None])[1] if isinstance(args.get('between'), list) else None)
         r = args.get('radius', 0.5)
-        return {'entity1': str(e1) if e1 is not None else '', 'entity2': str(e2) if e2 is not None else '', 'radius': float(r)}
+        out = {'entity1': str(e1) if e1 is not None else '', 'entity2': str(e2) if e2 is not None else '', 'radius': float(r)}
+        if args.get('pick1') or args.get('p1'):
+            out['pick1'] = args.get('pick1') or args.get('p1')
+        if args.get('pick2') or args.get('p2'):
+            out['pick2'] = args.get('pick2') or args.get('p2')
+        return out
     elif fn_name in ['read_entity', 'delete_entity']:
         ident = args.get('id') or args.get('handle') or ''
         return {'id': str(ident)}
@@ -742,87 +717,122 @@ def _extract_valid_json_spec(text: str) -> tuple[Optional[dict], Optional[str]]:
 
 async def _sanitize_analyst_output(callback_context, llm_response):
     """Sanitizes analyst output into an actionable Technical CAD Drafting Directive and extracts JSON spec."""
-    global _analyst_tool_calls
+    await _parse_and_inject_tool_calls(callback_context, llm_response)
+
+    parts = getattr(getattr(llm_response, 'content', None), 'parts', None) or []
+    has_tool_calls = any(getattr(p, 'function_call', None) for p in parts)
+
+    state_calls = 0
+    if callback_context and hasattr(callback_context, 'state'):
+        state_calls = int(callback_context.state.get('analyst_tool_calls', 0))
+        if has_tool_calls:
+            state_calls += 1
+            callback_context.state['analyst_tool_calls'] = state_calls
+
     output_text = ""
-    if llm_response and getattr(llm_response, 'content', None):
-        if getattr(llm_response.content, 'parts', None):
-            for part in llm_response.content.parts:
-                t = getattr(part, 'text', None)
-                if t:
-                    # Strip persona greeting if present
-                    if t.startswith("I am Qwen."):
-                        t = t[len("I am Qwen."):].strip()
-                    part.text = t
-                    output_text += t + "\n"
+    for part in parts:
+        t = getattr(part, 'text', None)
+        if t:
+            if t.startswith("I am Qwen."):
+                t = t[len("I am Qwen."):].strip()
+            part.text = t
+            output_text += t + "\n"
 
     cleaned_text = output_text.strip()
     parsed_spec, spec_json_str = _extract_valid_json_spec(cleaned_text)
 
     if not spec_json_str:
-        if not cleaned_text:
-            cleaned_text = json.dumps({
-                "units": "mm",
-                "h": 12,
-                "origin": "baseline, bottom-left of bounding box",
-                "bbox": {"xmin": 0, "xmax": 27.6, "ymin": 0, "ymax": 12},
-                "stated_labels": ["h=12", "R1=0.625h", "2.3h"],
-                "outer_loop": [
-                    {"id": "L1", "type": "line", "p1": [1.5, 0], "p2": [27.6, 0]},
-                    {"id": "L2", "type": "line", "p1": [27.6, 0], "p2": [24.0, 3.0]},
-                    {"id": "L3", "type": "line", "p1": [24.0, 3.0], "p2": [24.0, 1.2]},
-                    {"id": "L4", "type": "line", "p1": [24.0, 1.2], "p2": [1.5, 1.2]},
-                    {"id": "L5", "type": "line", "p1": [1.5, 1.2], "p2": [1.5, 0]}
-                ],
-                "inner_features": [],
-                "fillets": [
-                    {"corner": [24.0, 3.0], "between": ["L2", "L3"], "radius": 0.5, "basis": "ESTIMATED", "expected_sweep": 90.0}
-                ],
-                "checks": {"loop_closed": True, "bbox_ok": True, "arcs_ok": True},
-                "uncertain": []
-            }, indent=2)
-            spec_json_str = cleaned_text
-        else:
-            spec_json_str = cleaned_text
+        spec_json_str = cleaned_text
 
-    # Store in session state for downstream agents
+    # Store in session state whenever valid JSON is available (or as fallback text)
     if callback_context and hasattr(callback_context, 'state'):
         try:
-            callback_context.state['drawing_spec'] = spec_json_str
-            callback_context.state['cad_description'] = cleaned_text
+            if parsed_spec or not has_tool_calls:
+                callback_context.state['drawing_spec'] = spec_json_str
+                callback_context.state['cad_description'] = cleaned_text
+            if parsed_spec and isinstance(parsed_spec, dict):
+                p_name = parsed_spec.get('part_name') or 'mechanical_part'
+                p_slug = re.sub(r'[^a-zA-Z0-9]+', '_', str(p_name).lower()).strip('_') or 'mechanical_part'
+                callback_context.state['part_name'] = p_slug
+            else:
+                callback_context.state.setdefault('part_name', 'mechanical_part')
         except Exception:
             pass
 
-    # CRITICAL LOOP-PREVENTION & TURN TERMINATION:
-    # If the analyst has produced a valid JSON spec, OR if analyst tool calls >= 2:
-    # STRIP any function_call parts from the response!
-    # In ADK, an agent keeps calling tools and never transitions if function_call is present.
-    # Stripping function_call when the JSON is ready forces the agent turn to terminate immediately!
-    if llm_response and getattr(llm_response, 'content', None) and getattr(llm_response.content, 'parts', None):
-        has_valid_json = parsed_spec is not None
-        if has_valid_json or _analyst_tool_calls >= 2:
+    # Allow Analyst up to 12 Python/geometry tool-calling turns before forcing final spec completion
+    if llm_response and getattr(llm_response, 'content', None) and parts:
+        if has_tool_calls and state_calls < 12 and parsed_spec is None:
+            return None
+        if parsed_spec is not None or state_calls >= 12:
             non_tool_parts = [
-                part for part in llm_response.content.parts
+                part for part in parts
                 if not getattr(part, 'function_call', None)
             ]
             if non_tool_parts:
                 llm_response.content.parts = non_tool_parts
             else:
-                llm_response.content.parts = [types.Part.from_text(text=spec_json_str)]
-            # Reset tool call counter for next session
-            _analyst_tool_calls = 0
+                llm_response.content.parts = [types.Part.from_text(text=spec_json_str or "{}")]
+            if callback_context and hasattr(callback_context, 'state'):
+                callback_context.state['analyst_tool_calls'] = 0
 
     return None
 
 _sanitize_drawing_spec_output = _sanitize_analyst_output
 
 async def _sanitize_critic_output(callback_context, llm_response):
-    """Sanitizes critic output to ensure clean CriticReport JSON parsing and tool call execution."""
+    """Sanitizes critic output, ensuring visual render occurs before evaluation or exit_loop."""
     await _parse_and_inject_tool_calls(callback_context, llm_response)
-    if llm_response and getattr(llm_response, 'content', None):
-        if getattr(llm_response.content, 'parts', None):
-            for part in llm_response.content.parts:
-                if getattr(part, 'text', None):
-                    part.text = sanitize_json_output(part.text, default_schema=CriticReport)
+    if not (llm_response and getattr(llm_response, 'content', None) and getattr(llm_response.content, 'parts', None)):
+        return None
+
+    parts = list(llm_response.content.parts)
+    has_rendered = False
+    part_name = 'mechanical_part'
+    if callback_context and hasattr(callback_context, 'state'):
+        has_rendered = bool(callback_context.state.get('critic_rendered_this_iter', False))
+        part_name = callback_context.state.get('part_name', 'mechanical_part')
+
+    # Check tool calls
+    fn_calls = [getattr(p, 'function_call', None) for p in parts if getattr(p, 'function_call', None)]
+    fn_names = [fc.name for fc in fn_calls]
+
+    # Guard: prevent Critic from calling exit_loop before render() has visually shown the CAD output
+    if 'exit_loop' in fn_names and not has_rendered:
+        filtered_parts = [p for p in parts if not (getattr(p, 'function_call', None) and p.function_call.name == 'exit_loop')]
+        if 'render' not in fn_names and 'get_screenshot' not in fn_names:
+            render_tool = 'render' if CAD_BACKEND == 'cadcraft' else 'get_screenshot'
+            render_args = (
+                {'fit': True, 'path': str(OUTPUT_DIR / f"{part_name}_rendered.png")}
+                if CAD_BACKEND == 'cadcraft'
+                else {'view_angle': 'Top', 'doc_name': 'Drawing'}
+            )
+            filtered_parts.append(types.Part.from_function_call(name=render_tool, args=render_args))
+        parts = filtered_parts
+        fn_calls = [getattr(p, 'function_call', None) for p in parts if getattr(p, 'function_call', None)]
+        fn_names = [fc.name for fc in fn_calls]
+
+    has_pending_inspection_tools = any(name != 'exit_loop' for name in fn_names)
+
+    new_parts = []
+    for part in parts:
+        t = getattr(part, 'text', None)
+        if t and not has_pending_inspection_tools:
+            sanitized_txt = sanitize_json_output(t, default_schema=CriticReport)
+            # Also block false positive is_accurate=True if Critic hasn't rendered yet
+            if not has_rendered:
+                try:
+                    rep = json.loads(sanitized_txt)
+                    if isinstance(rep, dict) and rep.get('is_accurate'):
+                        rep['is_accurate'] = False
+                        rep['accuracy_score'] = min(float(rep.get('accuracy_score', 0.0)), 50.0)
+                        rep['summary'] = "Visual inspection incomplete: render() has not been evaluated yet."
+                        sanitized_txt = json.dumps(rep)
+                except Exception:
+                    pass
+            part.text = sanitized_txt
+        new_parts.append(part)
+
+    llm_response.content.parts = new_parts
     return None
 
 async def _parse_and_inject_tool_calls(callback_context, llm_response):
@@ -907,91 +917,16 @@ async def _parse_and_inject_tool_calls(callback_context, llm_response):
 
 
 def _detect_and_summarize_image(data) -> str:
-    """Pre-extracts geometric features from image bytes or base64 str to eliminate multimodal token compute."""
+    """Extracts basic image info without injecting false geometry templates."""
     try:
         import base64
         if isinstance(data, str):
             data = base64.b64decode(data)
         im = Image.open(io.BytesIO(data))
         w, h = im.size
-        aspect = w / max(h, 1)
-        # Check for test.png: Precision 2D Cam Lever Catch Bracket
-        if (w == 484 and h == 269) or (abs(w / max(h, 1) - 1.8) < 0.08):
-            h_val = float(os.getenv('SKETCHCAD_H_PARAM', '12.0'))
-            return (
-                f"# TECHNICAL CAD DRAFTING DIRECTIVE\n\n"
-                f"## 1. COMPONENT SPECIFICATION & DATUM DEFINITION\n"
-                f"- Component Name: Precision 2D Cam Lever Catch Bracket (parameter h = {h_val} mm)\n"
-                f"- Primary Origin Datum (0.0, 0.0): Bottom-left starting vertex; all coordinates referenced from origin (0.0, 0.0).\n"
-                f"- Overall Length: 2.3h = {2.3 * h_val:.3f} mm\n"
-                f"- Total Height: h = {h_val:.3f} mm\n"
-                f"- Units: mm\n\n"
-                f"## 2. FUNCTIONAL PART DECOMPOSITION\n"
-                f"- Part 1 [Nominal Base Envelope]: Bottom base line from (0.0, 0.0) to ({2.3 * h_val:.3f}, 0.0), right catch step up to y = {0.25 * h_val:.3f}, horizontal arm top at y = {0.1 * h_val:.3f}.\n"
-                f"- Part 2 [Circular Features & Bores]: Outer Head Arc R1 = 0.625h = {0.625 * h_val:.3f} mm at center ({0.625 * h_val:.3f}, {0.375 * h_val:.3f}); Inner Bore Hole R2 = 0.3h = {0.3 * h_val:.3f} mm at center ({0.625 * h_val:.3f}, {0.375 * h_val:.3f}).\n"
-                f"- Part 3 [Cuts, Slots & Joints]: Catch notch at right end of width 0.3h = {0.3 * h_val:.3f} mm, height 0.25h = {0.25 * h_val:.3f} mm.\n"
-                f"- Part 4 [Corner Fillets & Blends]: Tangent blend transition up from base (0.0, 0.0) to outer head arc at (0.0, {0.375 * h_val:.3f}).\n"
-                f"- Part 5 [Dimensions & Text Annotations]: Dimension callouts for 2.3h, h, 0.625h, 0.3h, 0.1h, 0.25h.\n\n"
-                f"## 3. STEP-BY-STEP MCP TOOL CALL DIRECTIVE FOR DRAFTSMAN\n"
-                f"- Step 1: new_drawing(metric=True)\n"
-                f"- Step 2: Draw bottom base line from (0.0, 0.0) to ({2.3 * h_val:.3f}, 0.0)\n"
-                f"- Step 3: Draw catch notch and horizontal arm using execute(command='line', ...)\n"
-                f"- Step 4: Draw outer circular head arc R={0.625 * h_val:.3f} and inner bore circle R={0.3 * h_val:.3f} at center ({0.625 * h_val:.3f}, {0.375 * h_val:.3f})\n"
-                f"- Step 5: Verify closed loops and watertight joints using close_joint\n"
-                f"- Step 6: Add linear dimensions and text annotations\n"
-                f"- Step 7: save('OUT.dxf'), open_in_cadcraft_gui('OUT.dxf'), and render(fit=True, path='OUT.png')"
-            )
-        elif aspect > 1.3:
-            return (
-                "# TECHNICAL CAD DRAFTING DIRECTIVE\n\n"
-                "## 1. COMPONENT SPECIFICATION & DATUM DEFINITION\n"
-                "- Component Name: Double-Ended Plain Cylindrical Limit Plug Gauge (GO / NO GO)\n"
-                "- Primary Origin Datum (0.0, 0.0): Bottom-left starting vertex; all coordinates referenced from origin (0.0, 0.0).\n"
-                "- Overall Length: 65.0 mm\n"
-                "- Units: mm\n\n"
-                "## 2. FUNCTIONAL PART DECOMPOSITION\n"
-                "- Part 1 [Nominal Base Envelope]: Three stepped cylindrical sections along X axis from X=0.0 to X=65.0 mm.\n"
-                "  * Left cylinder ('GO'): Length = 25.0 mm, Diameter = 9.985 mm (corners at [0,0] to [25, 9.985])\n"
-                "  * Middle cylinder (Handle): Length = 20.0 mm, Diameter = 8.0 mm (from X=25 to X=45)\n"
-                "  * Right cylinder ('No GO'): Length = 20.0 mm, Diameter = 10.015 mm (from X=45 to X=65)\n"
-                "- Part 2 [Circular Features & Bores]: Cylindrical cross sections with axis along centerline Y = 5.0 mm.\n"
-                "- Part 3 [Cuts, Slots & Joints]: Stepped shoulder transitions between cylinders.\n"
-                "- Part 4 [Corner Fillets & Blends]: Chamfered or filleted entry shoulders.\n"
-                "- Part 5 [Dimensions & Text Annotations]: Text annotations 'GO', 'No GO', 'PLAIN LIMIT PLUG GAUGE' and linear dimensions.\n\n"
-                "## 3. STEP-BY-STEP MCP TOOL CALL DIRECTIVE FOR DRAFTSMAN\n"
-                "- Step 1: new_drawing(metric=True)\n"
-                "- Step 2: Draw the 3 stepped cylinder profiles using execute(command='line', ...)\n"
-                "- Step 3: Draw centerline and stepped shoulders\n"
-                "- Step 4: Verify closed watertight boundary using close_joint\n"
-                "- Step 5: Add linear dimensions (25.0, 20.0, 20.0, Ø9.985, Ø8.0, Ø10.015)\n"
-                "- Step 6: Add text annotations 'GO' at [12.5, 5.0], 'No GO' at [55.0, 5.0]\n"
-                "- Step 7: save('OUT.dxf'), open_in_cadcraft_gui('OUT.dxf'), and render(fit=True, path='OUT.png')"
-            )
-        else:
-            return (
-                "# TECHNICAL CAD DRAFTING DIRECTIVE\n\n"
-                "## 1. COMPONENT SPECIFICATION & DATUM DEFINITION\n"
-                "- Component Name: Precision 2D Machined Flange Profile\n"
-                "- Primary Origin Datum (0.0, 0.0): Anchored strictly at bottom-left corner; all coordinates referenced from origin (0.0, 0.0).\n"
-                "- Overall Dimensions: Width 100.0 mm x Height 100.0 mm\n"
-                "- Units: mm\n\n"
-                "## 2. FUNCTIONAL PART DECOMPOSITION\n"
-                "- Part 1 [Nominal Base Envelope]: Base line [0, 0] to [100, 0], right protrusion tab at 60 deg angle (length 50.0 mm, width 12.5 mm), and slant down at 140 deg to base.\n"
-                "- Part 2 [Circular Features & Bores]: Main outer circular head R = 55.0 mm centered at (50.0, 45.0); central bore hole R = 30.0 mm centered at (50.0, 45.0).\n"
-                "- Part 3 [Cuts, Slots & Joints]: Keyway slot cutout at 20 deg angle cutting into bore circle.\n"
-                "- Part 4 [Corner Fillets & Blends]: Bottom corner fillets R = 3.0 mm, tab fillets R = 3.0 mm (construct nominal sharp edges first, then apply fillet_two_lines tool).\n"
-                "- Part 5 [Dimensions & Text Annotations]: Callouts 'R30', 'R55', '100.0', '12.5', '50.0', '60°'.\n\n"
-                "## 3. STEP-BY-STEP MCP TOOL CALL DIRECTIVE FOR DRAFTSMAN\n"
-                "- Step 1: new_drawing(metric=True)\n"
-                "- Step 2: Draw base line and nominal sharp corners from (0.0, 0.0)\n"
-                "- Step 3: Apply fillet_two_lines to sharp corners to produce exact tangent curve blends\n"
-                "- Step 4: Draw head arc R=55.0 mm and bore circle R=30.0 mm at (50.0, 45.0)\n"
-                "- Step 5: Cut keyway slot into bore using circle_line_intersections and arc_angles\n"
-                "- Step 6: Add dimensions and text annotations\n"
-                "- Step 7: save('OUT.dxf'), open_in_cadcraft_gui('OUT.dxf'), and render(fit=True, path='OUT.png')"
-            )
+        return f"Input Technical Drawing: 2D mechanical engineering drawing with resolution {w}x{h} px."
     except Exception:
-        return "# TECHNICAL CAD DRAFTING DIRECTIVE\n- 2D mechanical profile with millimeter dimensions referenced from origin (0.0, 0.0)."
+        return "Input Technical Drawing: 2D mechanical profile with millimeter dimensions."
 
 def _detect_and_summarize_pdf(data) -> str:
     """Renders PDF page to image and extracts text to avoid /v1/files 404 on local vLLM."""
@@ -1027,8 +962,40 @@ def _detect_and_summarize_pdf(data) -> str:
         pass
     return "Input Technical Drawing: 2D mechanical profile with millimeter dimensions."
 
+def _prepare_image_bytes(raw_data: Any, enhance_blueprint: bool = False, max_dim: int = 2048) -> Optional[bytes]:
+    """Normalizes image bytes, upscaling/enhancing small blueprints or bounding max resolution."""
+    try:
+        if isinstance(raw_data, str):
+            import base64
+            img_bytes = base64.b64decode(raw_data)
+        else:
+            img_bytes = bytes(raw_data)
+        pil_img = Image.open(io.BytesIO(img_bytes))
+        if pil_img.mode not in ('RGB', 'L'):
+            pil_img = pil_img.convert('RGB')
+        w, h = pil_img.size
+        longest = max(w, h)
+        changed = False
+        if enhance_blueprint and longest < 1300:
+            scale = min(2.0, 1550.0 / max(1, longest))
+            pil_img = pil_img.resize((int(round(w * scale)), int(round(h * scale))), Image.Resampling.LANCZOS)
+            pil_img = ImageEnhance.Contrast(pil_img).enhance(1.25)
+            pil_img = ImageEnhance.Sharpness(pil_img).enhance(1.4)
+            changed = True
+        elif longest > max_dim:
+            pil_img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+            changed = True
+        if not changed and isinstance(raw_data, (bytes, bytearray)):
+            return img_bytes
+        buf = io.BytesIO()
+        pil_img.save(buf, format='PNG')
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
 async def _pace_and_preprocess(callback_context, llm_request):
-    """Paces requests, strips slow multimodal tokens to eliminate timeouts, and injects fast CAD context."""
+    """Paces requests, enhances blueprint legibility, and delivers rendered CAD screenshots to the VLM."""
     global _last_call_time
     if PACE_SECONDS > 0:
         now = time.time()
@@ -1037,8 +1004,21 @@ async def _pace_and_preprocess(callback_context, llm_request):
             await asyncio.sleep(PACE_SECONDS - elapsed)
         _last_call_time = time.time()
 
+    part_name = 'mechanical_part'
+    agent_name = getattr(callback_context, 'agent_name', '') if callback_context else ''
+    if callback_context and hasattr(callback_context, 'state'):
+        callback_context.state.setdefault('part_name', 'mechanical_part')
+        callback_context.state.setdefault('drawing_spec', '{}')
+        callback_context.state.setdefault('cad_description', '')
+        callback_context.state.setdefault('critic_report', '{}')
+        part_name = callback_context.state.get('part_name') or 'mechanical_part'
+
+    latest_render_bytes: Optional[bytes] = None
+    saw_render_in_trailing_tools = False
+
     if llm_request and getattr(llm_request, 'contents', None):
-        for content in llm_request.contents:
+        num_contents = len(llm_request.contents)
+        for c_idx, content in enumerate(llm_request.contents):
             if getattr(content, 'parts', None):
                 new_parts = []
                 for part in content.parts:
@@ -1049,26 +1029,11 @@ async def _pace_and_preprocess(callback_context, llm_request):
                             new_parts.append(types.Part.from_text(text=f"\n[DRAWING SPECIFICATION EXTRACTED FROM PDF]:\n{summary}\n"))
                             continue
                         elif mime.startswith('image/'):
-                            if os.getenv('SKETCHCAD_MULTIMODAL', '1') == '1':
-                                try:
-                                    img_data = part.inline_data.data
-                                    if isinstance(img_data, str):
-                                        import base64
-                                        img_bytes = base64.b64decode(img_data)
-                                    else:
-                                        img_bytes = img_data
-                                    pil_img = Image.open(io.BytesIO(img_bytes))
-                                    if max(pil_img.size) > 768:
-                                        pil_img.thumbnail((768, 768))
-                                        buf = io.BytesIO()
-                                        pil_img.save(buf, format='PNG')
-                                        part.inline_data.data = buf.getvalue()
-                                except Exception:
-                                    pass
-                                new_parts.append(part)
-                                continue
-                            summary = _detect_and_summarize_image(part.inline_data.data)
-                            new_parts.append(types.Part.from_text(text=f"\n[DRAWING SPECIFICATION EXTRACTED FROM IMAGE]:\n{summary}\n"))
+                            processed = _prepare_image_bytes(part.inline_data.data, enhance_blueprint=True, max_dim=2048)
+                            if processed:
+                                part.inline_data.data = processed
+                                part.inline_data.mime_type = 'image/png'
+                            new_parts.append(part)
                             continue
                         else:
                             new_parts.append(types.Part.from_text(text="\n[DRAWING SPECIFICATION EXTRACTED FROM ATTACHMENT]:\nTechnical CAD Drawing with millimeter dimensions.\n"))
@@ -1079,6 +1044,8 @@ async def _pace_and_preprocess(callback_context, llm_request):
                         if fn_name == 'new_drawing':
                             _entity_id_map.clear()
                             _handles_history.clear()
+                            if callback_context and hasattr(callback_context, 'state'):
+                                callback_context.state['critic_rendered_this_iter'] = False
                         elif fn_name == 'execute' and isinstance(resp, dict):
                             handles = resp.get('handles') or ([resp['handle']] if 'handle' in resp else [])
                             for h in handles:
@@ -1088,41 +1055,101 @@ async def _pace_and_preprocess(callback_context, llm_request):
                             sanitized = []
                             for item in resp['content']:
                                 if isinstance(item, dict) and item.get('type') == 'image' and 'data' in item:
+                                    out_img = str(OUTPUT_DIR / f"{part_name}_rendered.png")
                                     try:
                                         import base64
-                                        with open("OUT.png", "wb") as f_out:
-                                            f_out.write(base64.b64decode(item['data']))
+                                        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+                                        raw_png = base64.b64decode(item['data'])
+                                        with open(out_img, "wb") as f_out:
+                                            f_out.write(raw_png)
+                                        latest_render_bytes = raw_png
+                                        if c_idx >= num_contents - 2:
+                                            saw_render_in_trailing_tools = True
+                                        if callback_context and hasattr(callback_context, 'state'):
+                                            callback_context.state['latest_render_path'] = out_img
+                                            if agent_name == 'critic':
+                                                callback_context.state['critic_rendered_this_iter'] = True
                                     except Exception:
                                         pass
                                     sanitized.append({
                                         'type': 'text',
-                                        'text': '[CAD drawing screenshot rendered and saved to OUT.png]'
+                                        'text': f'[CAD drawing screenshot rendered and saved to {out_img}]'
                                     })
                                 else:
                                     sanitized.append(item)
                             resp['content'] = sanitized
+                        elif fn_name in ('render', 'get_screenshot'):
+                            # Handle case where session history already stripped inline base64
+                            if callback_context and hasattr(callback_context, 'state') and agent_name == 'critic':
+                                callback_context.state['critic_rendered_this_iter'] = True
                     new_parts.append(part)
                 content.parts = new_parts
+
+        # Inject the latest rendered CADCraft PNG as a visual user message so Critic (or Draftsman/Refiner)
+        # can actually inspect the drawing visually side-by-side with the original blueprint!
+        should_show_render = saw_render_in_trailing_tools or (
+            agent_name == 'critic'
+            and callback_context
+            and hasattr(callback_context, 'state')
+            and bool(callback_context.state.get('critic_rendered_this_iter', False))
+        )
+        if should_show_render:
+            if not latest_render_bytes and callback_context and hasattr(callback_context, 'state'):
+                rp = callback_context.state.get('latest_render_path') or str(OUTPUT_DIR / f"{part_name}_rendered.png")
+                if rp and os.path.isfile(rp):
+                    try:
+                        latest_render_bytes = Path(rp).read_bytes()
+                    except Exception:
+                        latest_render_bytes = None
+            if latest_render_bytes:
+                bounded_render = _prepare_image_bytes(latest_render_bytes, enhance_blueprint=False, max_dim=1400) or latest_render_bytes
+                render_prompt = types.Part.from_text(
+                    text=(
+                        f"[RENDERED CADCRAFT OUTPUT IMAGE ({part_name}_rendered.png)] "
+                        "Inspect this rendered CADCraft drawing carefully and compare its outer silhouette, "
+                        "arc curvatures (concave vs convex), concentric circles, hole positions, and tangent joints "
+                        "directly against the ORIGINAL technical drawing image uploaded earlier."
+                    )
+                )
+                render_img_part = types.Part.from_bytes(data=bounded_render, mime_type='image/png')
+                last_c = llm_request.contents[-1]
+                last_has_fn_resp = any(getattr(p, 'function_response', None) for p in (getattr(last_c, 'parts', None) or []))
+                if getattr(last_c, 'role', '') == 'user' and not last_has_fn_resp:
+                    last_c.parts.extend([render_prompt, render_img_part])
+                else:
+                    llm_request.contents.append(types.Content(role='user', parts=[render_prompt, render_img_part]))
+
     return None
 
 retry_policy = RetryConfig(max_attempts=1, initial_delay=1.0)
 gen_config = types.GenerateContentConfig(
-    max_output_tokens=2048,
+    max_output_tokens=4096,
     http_options=types.HttpOptions(
         retry_options=types.HttpRetryOptions(initial_delay=1.0, attempts=1)
     )
 )
 
 
-
 def python_tool(code: str) -> str:
     """Executes Python code for mathematical calculations, trigonometry, and geometric intersections.
+    Includes `math`, `numpy` (as `np`), and all `geometry_tools` functions directly in scope.
     Prints formulas and calculated results to stdout.
     """
-    global _analyst_tool_calls
-    _analyst_tool_calls += 1
     import sys, io, traceback, math
-    local_env = {"math": math}
+    from sketchcad_agent import geometry_tools as _gt
+    local_env = {
+        "math": math,
+        "fillet_two_lines": _gt.fillet_two_lines,
+        "tangent_lines_two_circles": _gt.tangent_lines_two_circles,
+        "tangent_from_point_to_circle": _gt.tangent_from_point_to_circle,
+        "circle_circle_intersections": _gt.circle_circle_intersections,
+        "circle_line_intersections": _gt.circle_line_intersections,
+        "arc_angles": _gt.arc_angles,
+        "line_line_intersection": _gt.line_line_intersection,
+        "tangent_arc_line_circle": _gt.tangent_arc_line_circle,
+        "tangent_arc_two_circles": _gt.tangent_arc_two_circles,
+        "tangent_point_and_vector": _gt.tangent_point_and_vector,
+    }
     try:
         import numpy as np
         local_env["np"] = np
@@ -1143,14 +1170,31 @@ def python_tool(code: str) -> str:
             compiled = compile(code, "<python_tool>", "exec")
             exec(compiled, local_env)
         output = stdout_capture.getvalue().strip()
-        result_str = output if output else "Executed successfully (no output)."
-        if _analyst_tool_calls >= 2:
-            result_str += "\n\n[NOTE: Maximum tool calls reached. You have all required calculations. Now immediately output the WORKING section and the final JSON specification. Do NOT call python_tool again.]"
-        return result_str
+        return output if output else "Executed successfully (no output)."
     except Exception as e:
         return f"Error executing Python code: {e}\n{traceback.format_exc()}"
     finally:
         sys.stdout = old_stdout
+
+
+async def _init_pipeline_state(callback_context):
+    """Resets per-run pipeline state cleanly before Analyst runs."""
+    if callback_context and hasattr(callback_context, 'state'):
+        callback_context.state.setdefault('part_name', 'mechanical_part')
+        callback_context.state.setdefault('drawing_spec', '{}')
+        callback_context.state.setdefault('cad_description', '')
+        callback_context.state.setdefault('critic_report', '{}')
+        callback_context.state['analyst_tool_calls'] = 0
+        callback_context.state['critic_rendered_this_iter'] = False
+        callback_context.state.pop('latest_render_path', None)
+    return None
+
+
+async def _reset_critic_render_flag(callback_context):
+    """Marks that Draftsman/Refiner is editing the drawing so Critic must call render() fresh."""
+    if callback_context and hasattr(callback_context, 'state'):
+        callback_context.state['critic_rendered_this_iter'] = False
+    return None
 
 
 analyst_output_schema = None
@@ -1160,11 +1204,24 @@ analyst = LlmAgent(
     name='analyst',
     model=active_model,
     instruction=ANALYST_PROMPT,
-    tools=[python_tool],
+    tools=[
+        python_tool,
+        fillet_two_lines,
+        tangent_lines_two_circles,
+        tangent_from_point_to_circle,
+        circle_circle_intersections,
+        circle_line_intersections,
+        arc_angles,
+        line_line_intersection,
+        tangent_arc_line_circle,
+        tangent_arc_two_circles,
+        tangent_point_and_vector,
+    ],
     output_schema=None,
     output_key='cad_description',
     retry_config=retry_policy,
     generate_content_config=gen_config,
+    before_agent_callback=_init_pipeline_state,
     before_model_callback=_pace_and_preprocess,
     after_model_callback=_sanitize_analyst_output
 )
@@ -1282,8 +1339,35 @@ async def delete_entity(id: str = "") -> dict:
     except Exception as exc:
         return {'error': str(exc), 'status': 'failed'}
 
-async def add_fillet(entity1: str, entity2: str, radius: float) -> dict:
-    """Applies a fillet between two entities with radius R, trims corner lines, and inserts the fillet arc."""
+def _representative_point(ent: dict, toward: Optional[list[float]] = None) -> list[float]:
+    """Computes a pick point lying cleanly on a line, arc, or circle entity."""
+    etype = ent.get('type', '')
+    if etype == 'circle' and ent.get('center') and ent.get('radius'):
+        cx, cy = ent['center']
+        r = float(ent['radius'])
+        if toward:
+            dx, dy = toward[0] - cx, toward[1] - cy
+            d = math.hypot(dx, dy)
+            if d > 1e-6:
+                return [cx + r * dx / d, cy + r * dy / d]
+        return [cx + r, cy]
+    if etype == 'arc' and ent.get('midpoint'):
+        return ent['midpoint']
+    p1 = ent.get('p1')
+    p2 = ent.get('p2')
+    if p1 and p2:
+        return [(p1[0] + p2[0]) / 2.0, (p1[1] + p2[1]) / 2.0]
+    return ent.get('center') or [0.0, 0.0]
+
+
+async def add_fillet(
+    entity1: str,
+    entity2: str,
+    radius: float,
+    pick1: Optional[list[float]] = None,
+    pick2: Optional[list[float]] = None,
+) -> dict:
+    """Applies a fillet between two entities (lines, arcs, or circles) with radius R and inserts the fillet arc."""
     global _entity_id_map
     try:
         e1 = await read_entity(entity1)
@@ -1294,33 +1378,39 @@ async def add_fillet(entity1: str, entity2: str, radius: float) -> dict:
         h1 = e1['handle']
         h2 = e2['handle']
 
-        l1 = e1.get('length', 999.0)
-        l2 = e2.get('length', 999.0)
-        if radius > min(l1, l2) + 0.05:
-            return {
-                'error': f'Radius {radius} is too large for neighbouring segment (lengths {l1:.3f}, {l2:.3f}). Halve the radius once and retry.',
-                'status': 'failed'
-            }
+        if e1.get('type') == 'line' and e2.get('type') == 'line':
+            l1 = e1.get('length', 999.0)
+            l2 = e2.get('length', 999.0)
+            if radius > min(l1, l2) + 0.05:
+                return {
+                    'error': f'Radius {radius} is too large for neighbouring line segments (lengths {l1:.3f}, {l2:.3f}).',
+                    'status': 'failed'
+                }
 
-        pts1 = e1.get('endpoints', [e1.get('p1'), e1.get('p2')])
-        pts2 = e2.get('endpoints', [e2.get('p1'), e2.get('p2')])
-
-        best_dist = 999999.0
-        c1, c2 = None, None
-        for p_a in pts1:
-            for p_b in pts2:
-                d = math.hypot(p_a[0] - p_b[0], p_a[1] - p_b[1])
-                if d < best_dist:
-                    best_dist = d
-                    c1, c2 = p_a, p_b
-
-        o1 = pts1[1] if pts1[0] == c1 else pts1[0]
-        o2 = pts2[1] if pts2[0] == c2 else pts2[0]
-        pick1 = [c1[0] + 0.1 * (o1[0] - c1[0]), c1[1] + 0.1 * (o1[1] - c1[1])]
-        pick2 = [c2[0] + 0.1 * (o2[0] - c2[0]), c2[1] + 0.1 * (o2[1] - c2[1])]
+        if pick1 is None or pick2 is None:
+            pts1 = [p for p in (e1.get('endpoints') or [e1.get('p1'), e1.get('p2')]) if p]
+            pts2 = [p for p in (e2.get('endpoints') or [e2.get('p1'), e2.get('p2')]) if p]
+            if e1.get('type') == 'line' and e2.get('type') == 'line' and len(pts1) == 2 and len(pts2) == 2:
+                best_dist = 999999.0
+                c1, c2 = pts1[0], pts2[0]
+                for p_a in pts1:
+                    for p_b in pts2:
+                        d = math.hypot(p_a[0] - p_b[0], p_a[1] - p_b[1])
+                        if d < best_dist:
+                            best_dist = d
+                            c1, c2 = p_a, p_b
+                o1 = pts1[1] if pts1[0] == c1 else pts1[0]
+                o2 = pts2[1] if pts2[0] == c2 else pts2[0]
+                pick1 = pick1 or [c1[0] + 0.1 * (o1[0] - c1[0]), c1[1] + 0.1 * (o1[1] - c1[1])]
+                pick2 = pick2 or [c2[0] + 0.1 * (o2[0] - c2[0]), c2[1] + 0.1 * (o2[1] - c2[1])]
+            else:
+                ref2 = _representative_point(e2)
+                ref1 = _representative_point(e1, toward=ref2)
+                pick1 = pick1 or _representative_point(e1, toward=ref2)
+                pick2 = pick2 or _representative_point(e2, toward=ref1)
 
         res = await active_cad._execute_with_session(
-            lambda s: s.call_tool('execute', {'command': 'fillet', 'params': {'h1': h1, 'p1': pick1, 'h2': h2, 'p2': pick2, 'radius': radius}}),
+            lambda s: s.call_tool('execute', {'command': 'fillet', 'params': {'h1': h1, 'p1': pick1, 'h2': h2, 'p2': pick2, 'radius': radius, 'trim': True}}),
             'Error in fillet'
         )
         res_text = res.content[0].text if res.content else '{}'
@@ -1357,6 +1447,7 @@ draftsman = LlmAgent(
     instruction=draftsman_instruction,
     tools=[
         active_cad,
+        python_tool,
         add_fillet,
         read_entity,
         delete_entity,
@@ -1365,6 +1456,7 @@ draftsman = LlmAgent(
     ],
     retry_config=retry_policy,
     generate_content_config=gen_config,
+    before_agent_callback=_reset_critic_render_flag,
     before_model_callback=_pace_and_preprocess,
     after_model_callback=_parse_and_inject_tool_calls
 )
@@ -1388,6 +1480,7 @@ refiner = LlmAgent(
     instruction=refiner_instruction,
     tools=[
         active_cad,
+        python_tool,
         add_fillet,
         read_entity,
         delete_entity,
@@ -1396,6 +1489,7 @@ refiner = LlmAgent(
     ],
     retry_config=retry_policy,
     generate_content_config=gen_config,
+    before_agent_callback=_reset_critic_render_flag,
     before_model_callback=_pace_and_preprocess,
     after_model_callback=_parse_and_inject_tool_calls
 )
@@ -1409,5 +1503,6 @@ refinement_loop = LoopAgent(
 
 root_agent = SequentialAgent(
     name='sketchcad',
-    sub_agents=[analyst, draftsman, refinement_loop]
+    sub_agents=[analyst, draftsman, refinement_loop],
+    before_agent_callback=_init_pipeline_state,
 )

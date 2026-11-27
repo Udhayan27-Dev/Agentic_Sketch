@@ -102,13 +102,17 @@ class CADGeometryEvaluator:
         endpoints = []
         for ent in pred_entities:
             etype = ent.get("type")
-            if etype == "line" and ent.get("p1") and ent.get("p2"):
+            if ent.get("p1") and ent.get("p2"):
                 endpoints.append((ent["p1"], ent["p2"]))
             elif etype == "arc" and ent.get("center") and ent.get("radius"):
+                s_d = ent.get("start_deg", 0.0)
+                e_d = ent.get("end_deg", 0.0)
+                if abs(e_d - s_d) >= 360.0 or (s_d == 0.0 and e_d == 360.0):
+                    continue
                 c = ent["center"]
                 r = ent["radius"]
-                a1 = math.radians(ent.get("start_deg", 0.0))
-                a2 = math.radians(ent.get("end_deg", 0.0))
+                a1 = math.radians(s_d)
+                a2 = math.radians(e_d)
                 p_start = [c[0] + r * math.cos(a1), c[1] + r * math.sin(a1)]
                 p_end = [c[0] + r * math.cos(a2), c[1] + r * math.sin(a2)]
                 endpoints.append((p_start, p_end))
@@ -136,20 +140,56 @@ class CADGeometryEvaluator:
         tangent_rels = [r for r in gt_relations if r.get("kind") == "tangent"]
 
         ent_by_id = {e.get("id"): e for e in pred_entities if "id" in e}
-        for rel in tangent_rels:
-            refs = rel.get("refs", [])
-            if len(refs) == 2:
-                e1, e2 = ent_by_id.get(refs[0]), ent_by_id.get(refs[1])
-                if e1 and e2:
+        if tangent_rels:
+            for rel in tangent_rels:
+                refs = rel.get("refs", [])
+                if len(refs) == 2:
+                    e1, e2 = ent_by_id.get(refs[0]), ent_by_id.get(refs[1])
+                    if e1 and e2:
+                        line_e = e1 if e1.get("type") == "line" else (e2 if e2.get("type") == "line" else None)
+                        arc_e = e1 if e1.get("type") == "arc" else (e2 if e2.get("type") == "arc" else None)
+                        if line_e and arc_e and line_e.get("p1") and line_e.get("p2") and arc_e.get("center"):
+                            d1 = math.hypot(line_e["p1"][0] - arc_e["center"][0], line_e["p1"][1] - arc_e["center"][1])
+                            d2 = math.hypot(line_e["p2"][0] - arc_e["center"][0], line_e["p2"][1] - arc_e["center"][1])
+                            joint_pt = line_e["p1"] if d1 < d2 else line_e["p2"]
+                            err = calculate_tangency_error(line_e["p1"], line_e["p2"], arc_e["center"], joint_pt)
+                            tangent_errors.append(err)
+        else:
+            # Automatic geometric tangency evaluation: find joints where arc meets line/arc with smooth transition (<5 deg)
+            for i, e1 in enumerate(pred_entities):
+                for j, e2 in enumerate(pred_entities[i + 1:], start=i + 1):
+                    if not (e1.get("p1") and e1.get("p2") and e2.get("p1") and e2.get("p2")):
+                        continue
+                    # Check if they share a joint vertex
+                    joint = None
+                    for pt1 in (e1["p1"], e1["p2"]):
+                        for pt2 in (e2["p1"], e2["p2"]):
+                            if math.hypot(pt1[0] - pt2[0], pt1[1] - pt2[1]) <= self.tolerance_gap_mm:
+                                joint = pt1
+                                break
+                        if joint:
+                            break
+                    if not joint:
+                        continue
+
+                    # Case A: Line meets Arc
                     line_e = e1 if e1.get("type") == "line" else (e2 if e2.get("type") == "line" else None)
                     arc_e = e1 if e1.get("type") == "arc" else (e2 if e2.get("type") == "arc" else None)
-                    if line_e and arc_e and line_e.get("p1") and line_e.get("p2") and arc_e.get("center"):
-                        # Joint point is line endpoint closest to arc center
-                        d1 = math.hypot(line_e["p1"][0] - arc_e["center"][0], line_e["p1"][1] - arc_e["center"][1])
-                        d2 = math.hypot(line_e["p2"][0] - arc_e["center"][0], line_e["p2"][1] - arc_e["center"][1])
-                        joint_pt = line_e["p1"] if d1 < d2 else line_e["p2"]
-                        err = calculate_tangency_error(line_e["p1"], line_e["p2"], arc_e["center"], joint_pt)
-                        tangent_errors.append(err)
+                    if line_e and arc_e and arc_e.get("center"):
+                        err = calculate_tangency_error(line_e["p1"], line_e["p2"], arc_e["center"], joint)
+                        if err <= 5.0:  # Intended tangent blend
+                            tangent_errors.append(err)
+
+                    # Case B: Arc meets Arc
+                    elif e1.get("type") == "arc" and e2.get("type") == "arc" and e1.get("center") and e2.get("center"):
+                        c1, c2 = e1["center"], e2["center"]
+                        u1 = _unit([joint[0] - c1[0], joint[1] - c1[1]])
+                        u2 = _unit([joint[0] - c2[0], joint[1] - c2[1]])
+                        dot = abs(u1[0] * u2[0] + u1[1] * u2[1])
+                        dot = max(-1.0, min(1.0, dot))
+                        err = math.degrees(math.acos(dot))
+                        if err <= 5.0:  # Intended tangent joint
+                            tangent_errors.append(err)
 
         mean_tan_err = sum(tangent_errors) / len(tangent_errors) if tangent_errors else 0.0
         max_tan_err = max(tangent_errors) if tangent_errors else 0.0
@@ -224,7 +264,7 @@ class CADGeometryEvaluator:
             for i, entity in enumerate(msp):
                 dxftype = entity.dxftype()
                 layer_name = getattr(entity.dxf, "layer", "").upper()
-                if any(k in layer_name for k in ("CENTER", "DIM", "ANNOTAT", "DEFPOINT")):
+                if any(k in layer_name for k in ("CENTER", "DIM", "ANNOTAT", "DEFPOINT", "HIDDEN", "INTERNAL")):
                     continue
                 if dxftype == "LINE":
                     extracted_entities.append({
@@ -235,33 +275,79 @@ class CADGeometryEvaluator:
                     })
                 elif dxftype == "CIRCLE":
                     extracted_entities.append({
-                        "id": f"e{i+1}",
+                        "id": f"e{len(extracted_entities)+1}",
                         "type": "circle",
                         "center": [entity.dxf.center.x, entity.dxf.center.y],
                         "radius": entity.dxf.radius,
                     })
                 elif dxftype == "ARC":
+                    c = [entity.dxf.center.x, entity.dxf.center.y]
+                    r = entity.dxf.radius
+                    a1 = math.radians(entity.dxf.start_angle)
+                    a2 = math.radians(entity.dxf.end_angle)
+                    p_start = [c[0] + r * math.cos(a1), c[1] + r * math.sin(a1)]
+                    p_end = [c[0] + r * math.cos(a2), c[1] + r * math.sin(a2)]
                     extracted_entities.append({
                         "id": f"e{len(extracted_entities)+1}",
                         "type": "arc",
-                        "center": [entity.dxf.center.x, entity.dxf.center.y],
-                        "radius": entity.dxf.radius,
+                        "center": c,
+                        "radius": r,
                         "start_deg": entity.dxf.start_angle,
                         "end_deg": entity.dxf.end_angle,
+                        "p1": p_start,
+                        "p2": p_end,
                     })
                 elif dxftype in ("LWPOLYLINE", "POLYLINE"):
-                    pts = list(entity.vertices()) if dxftype == "POLYLINE" else [p[:2] for p in entity.get_points()]
-                    is_closed = entity.is_closed
-                    num_pts = len(pts)
-                    for j in range(num_pts if is_closed else num_pts - 1):
-                        p_start = [pts[j][0], pts[j][1]]
-                        p_end = [pts[(j + 1) % num_pts][0], pts[(j + 1) % num_pts][1]]
-                        extracted_entities.append({
-                            "id": f"e{len(extracted_entities)+1}",
-                            "type": "line",
-                            "p1": p_start,
-                            "p2": p_end,
-                        })
+                    if dxftype == "LWPOLYLINE":
+                        points = entity.get_points(format="xyb")
+                        is_closed = entity.is_closed
+                        num_pts = len(points)
+                        for j in range(num_pts if is_closed else num_pts - 1):
+                            p1 = points[j]
+                            p2 = points[(j + 1) % num_pts]
+                            b = p1[2]
+                            p_start = [p1[0], p1[1]]
+                            p_end = [p2[0], p2[1]]
+                            chord = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+                            if chord < 1e-6:
+                                continue
+                            if abs(b) > 1e-4:
+                                r_arc = chord * (1.0 + b * b) / (4.0 * abs(b))
+                                mx = (p1[0] + p2[0]) / 2.0
+                                my = (p1[1] + p2[1]) / 2.0
+                                nx = -(p2[1] - p1[1]) / chord
+                                ny = (p2[0] - p1[0]) / chord
+                                d = chord * (1.0 - b * b) / (4.0 * b)
+                                cx, cy = mx + d * nx, my + d * ny
+                                extracted_entities.append({
+                                    "id": f"e{len(extracted_entities)+1}",
+                                    "type": "arc",
+                                    "center": [round(cx, 4), round(cy, 4)],
+                                    "p1": p_start,
+                                    "p2": p_end,
+                                    "radius": round(r_arc, 4),
+                                    "bulge": b,
+                                })
+                            else:
+                                extracted_entities.append({
+                                    "id": f"e{len(extracted_entities)+1}",
+                                    "type": "line",
+                                    "p1": p_start,
+                                    "p2": p_end,
+                                })
+                    else:
+                        pts = list(entity.vertices())
+                        is_closed = entity.is_closed
+                        num_pts = len(pts)
+                        for j in range(num_pts if is_closed else num_pts - 1):
+                            p_start = [pts[j][0], pts[j][1]]
+                            p_end = [pts[(j + 1) % num_pts][0], pts[(j + 1) % num_pts][1]]
+                            extracted_entities.append({
+                                "id": f"e{len(extracted_entities)+1}",
+                                "type": "line",
+                                "p1": p_start,
+                                "p2": p_end,
+                            })
 
             pred_spec = {
                 "units": "mm",
@@ -286,3 +372,20 @@ class CADGeometryEvaluator:
                 summary=f"Failed to parse DXF: {e}",
                 details={"error": str(e)},
             )
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Evaluate CAD geometry from exported DXF")
+    parser.add_argument("dxf", help="Path to DXF file")
+    parser.add_argument("--gt", help="Path to ground truth JSON spec", default=None)
+    args = parser.parse_args()
+
+    gt = {}
+    if args.gt and os.path.exists(args.gt):
+        with open(args.gt, "r") as f:
+            gt = json.load(f)
+
+    evaluator = CADGeometryEvaluator()
+    report = evaluator.evaluate_dxf(args.dxf, gt, sample_id=os.path.basename(args.dxf))
+    print(json.dumps(asdict(report), indent=2))
